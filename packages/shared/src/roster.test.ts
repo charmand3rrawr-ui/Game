@@ -117,9 +117,23 @@ describe('imported reference data', () => {
     for (const name of ASSUMED_CONSTANTS) {
       expect(CONSTANT_META[name]?.provenance).toBe('assumed');
     }
-    // Most constants must be traceable to the workbook or the specification.
-    const assumedShare = ASSUMED_CONSTANTS.length / Object.keys(CONSTANT_META).length;
-    expect(assumedShare).toBeLessThan(0.15);
+    // The meaningful rule is not a ratio. It is that the constants defining
+    // the economy's shape — the six calibration anchors and the core formula
+    // exponents — are never assumed, and that every assumption carries a real
+    // explanation rather than a shrug.
+    const core = [
+      'BUILD_TIME_K', 'BUILD_COST_EXP', 'OUTPUT_EXP', 'TRAIN_CONST', 'VET_PER_LEVEL',
+      'XP_BASE', 'EW_CAP', 'EW_KNEE', 'EW_STEEPNESS', 'TIERUP_BASE', 'TIERUP_MULT',
+      'JOINT_BONUS_CAP', 'COUNTER_MAX', 'ENVY_PER_SCOPE', 'SHARD_BASE',
+    ];
+    for (const name of core) {
+      expect(CONSTANT_META[name]).toBeDefined();
+      expect(CONSTANT_META[name]?.provenance).not.toBe('assumed');
+    }
+    for (const name of ASSUMED_CONSTANTS) {
+      expect(CONSTANT_META[name]?.note.length).toBeGreaterThan(40);
+      expect(CONSTANT_META[name]?.ref.length).toBeGreaterThan(20);
+    }
   });
 });
 

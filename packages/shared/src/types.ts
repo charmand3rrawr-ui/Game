@@ -281,6 +281,8 @@ export interface PowerBreakdown {
 }
 
 export interface UnitPowerRow {
+  formationId: Uuid;
+  formationName: string;
   unitKey: string;
   unitName: string;
   role: string;

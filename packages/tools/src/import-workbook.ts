@@ -34,6 +34,7 @@ const WORKBOOK = resolve(ROOT, 'data/Ascendance_Master_Tables.xlsx');
 const OUT_CONSTANTS = resolve(ROOT, 'packages/shared/src/generated/constants.ts');
 const OUT_REFDATA = resolve(ROOT, 'packages/shared/src/generated/refdata.ts');
 const OUT_SEED = resolve(ROOT, 'packages/server/migrations/0002_seed_ref.sql');
+const OUT_ASSUMPTIONS = resolve(ROOT, 'docs/ASSUMPTIONS.md');
 
 // ============================================================================
 // Constant provenance
@@ -271,6 +272,51 @@ async function main(): Promise<void> {
   const COUNTER_MAX = C.fromSpec('COUNTER_MAX', 2.2, 'spec/07 §3.5 anchor', 'The strongest counter-matrix entry. Nothing may exceed it without review.', [1, 10]);
   const counter = readCounterMatrix(wb.sheet('Counter_Matrix'), COUNTER_MAX);
 
+  // ------------------------------------------------- combat phase weighting
+  // The six-phase resolver needs a handful of shape constants the specification
+  // describes qualitatively. Each is marked so the balance owner can tune it
+  // against the telemetry in spec/07 §5.
+  const RANGED_PHASE_WEIGHT = C.assumed(
+    'RANGED_PHASE_WEIGHT',
+    0.35,
+    'spec/03 §5 orders the phases but does not weight the ranged exchange against the main engagement',
+    'The pre-contact exchange lands 35% of a full engagement, so bringing artillery matters ' +
+      'without letting a siege train win unaccompanied.',
+  );
+  const WALL_GRADES_PER_SIEGE_SHARE = C.assumed(
+    'WALL_GRADES_PER_SIEGE_SHARE',
+    6,
+    'spec/03 §5 says fortification damage is applied in the ranged phase without a rate',
+    'A force that is entirely siege engines strips about six wall grades per assault, ' +
+      'so walls are worn down over a campaign rather than in one battle.',
+  );
+  const AMBUSH_MAX_CHANCE = C.assumed('AMBUSH_MAX_CHANCE', 0.35, 'spec/03 §5 phase 1 names ambush without probabilities', 'Ceiling on defender ambush chance.');
+  const AMBUSH_PER_CONCEALMENT = C.assumed('AMBUSH_PER_CONCEALMENT', 0.5, 'spec/03 §5 phase 1', 'How much terrain concealment contributes to ambush chance.');
+  const AMBUSH_PER_SCOUTING = C.assumed('AMBUSH_PER_SCOUTING', 0.4, 'spec/03 §5 phase 1', 'How much attacker scouting suppresses it — the payoff for scouting first.');
+  const AMBUSH_PENALTY = C.assumed('AMBUSH_PENALTY', 0.25, 'spec/03 §5 phase 1', 'An ambushed attacker fights at 75%.');
+  const AMBUSH_BONUS = C.assumed('AMBUSH_BONUS', 0.15, 'spec/03 §5 phase 1', 'An ambushing defender fights at 115%.');
+  const PURSUIT_PER_LOG_RATIO = C.assumed(
+    'PURSUIT_PER_LOG_RATIO',
+    0.25,
+    'spec/03 §5 phase 4 calls for casualty amplification on the losing side without a rate',
+    'Scales pursuit losses by the log of the power ratio, so a narrow win is not a massacre ' +
+      'and a rout is.',
+  );
+  const PURSUIT_MAX = C.assumed('PURSUIT_MAX', 0.6, 'spec/03 §5 phase 4', 'Ceiling on pursuit losses, so no single battle annihilates a force outright.');
+  const SCREEN_EXPOSURE = C.assumed(
+    'SCREEN_EXPOSURE',
+    1.6,
+    'spec/03 §7 requires screens to absorb disproportionately but gives no exposure figure',
+    'Screens take 60% more than their contribution share. This is what they are for, and it is ' +
+      'what absorption XP pays them for.',
+  );
+  const MUNITIONS_PER_DAMAGE = C.assumed(
+    'MUNITIONS_PER_DAMAGE',
+    0.001,
+    'spec/03 §5 phase 6 requires Era IV+ munitions drain without a rate',
+    'Munitions consumed per point of damage delivered, so industrial depth decides long wars.',
+  );
+
   // ----------------------------------------------------------- monetization
   const shardSheet = wb.sheet('Chrono_Shards');
   const SHARD_BASE = C.fromWorkbook('SHARD_BASE', shardSheet.labelled('Base ceiling', 0, 1), 'ceiling = 2.0 + 0.30*constructionRank + 0.50*era', [0, 100]);
@@ -290,6 +336,46 @@ async function main(): Promise<void> {
   const ENVY_WINDOW_MS = C.fromSpec('ENVY_WINDOW_MS', 24 * 3_600_000, 'spec/04 §11', 'Rolling 24h measurement window.', [0, 7 * 86_400_000]);
   const TEMPORAL_DEBT_TIERS = C.fromSpec('TEMPORAL_DEBT_TIERS', 6, 'spec/04 §11 · guardrail 3', 'Karma tiers raising tribulation difficulty and suppressing Qi regen.', [1, 20]);
   const TEMPORAL_DEBT_DECAY_MS = C.fromSpec('TEMPORAL_DEBT_DECAY_MS', 30 * 86_400_000, 'spec/04 §11 · guardrail 3', 'One tier per 30 days of abstention.', [0, 365 * 86_400_000]);
+
+  const GARRISON_HP_PER_WALL_GRADE = C.assumed(
+    'GARRISON_HP_PER_WALL_GRADE',
+    500,
+    'spec/03 §5 adds flat garrison HP to the defence pool without a figure',
+    'Flat hit points a wall grade contributes, so a fortified settlement is never a free kill ' +
+      'even with no garrison present.',
+  );
+  const CARRY_PER_UNIT = C.assumed(
+    'CARRY_PER_UNIT',
+    50,
+    'convoy capacity by era is described in spec/04 §2 without per-unit figures',
+    'Resources one unit can carry home. Bounds plunder, which is what stops a raid being a wipeout.',
+  );
+  const HIDDEN_CELLAR = C.assumed(
+    'HIDDEN_CELLAR',
+    2_000,
+    'spec/03 §5 names hidden-cellar protection without a figure',
+    'Resources that can never be looted, so a beaten player always has something to rebuild on.',
+  );
+  const CAPTURED_LOYALTY = C.assumed(
+    'CAPTURED_LOYALTY',
+    15,
+    'spec/04 §9 says a settlement flips "with low loyalty" without a number',
+    'Loyalty a freshly captured settlement starts at. Low enough to invite counter-conquest, ' +
+      'which is the point: taking ground is meant to be easier than holding it.',
+  );
+  const STARTING_MUNITIONS = C.assumed(
+    'STARTING_MUNITIONS',
+    1_000_000,
+    'spec/03 §5 phase 6 requires a munitions pool without a starting size',
+    'Munitions a force carries into an engagement before resupply.',
+  );
+  const ENVY_MIN_SPEND_FLOOR = C.assumed(
+    'ENVY_MIN_SPEND_FLOOR',
+    24,
+    'spec/04 §11 sets the floor at "the median player\u2019s 30-day earned shard income", which is a live telemetry value',
+    'Minimum purchased shard-hours to appear on a Heaven\u2019s Envy leaderboard, so a quiet scope ' +
+      'returns fewer than ten names rather than marking a trivial spender. Replace with the live median at launch.',
+  );
 
   // -------------------------------------------------------------- governors
   const GOVERNOR_TIME_MULT = C.fromSpec('GOVERNOR_TIME_MULT', 2.0, 'spec/04 §6 · the 2x rule', 'Anything a governor initiates takes twice as long. That field is the whole mechanic.', [1, 10]);
@@ -354,6 +440,76 @@ async function main(): Promise<void> {
     'Each net point of Statecraft advantage moves loyalty damage by 2%, clamped to +/-50%.',
   );
 
+  const HQ_FACTOR_PER_GRADE = C.assumed(
+    'HQ_FACTOR_PER_GRADE',
+    0.05,
+    'Category_Chassis!HQ/Governance describes HQ acceleration without a rate',
+    'Each HQ grade compresses build time in its settlement by 5%, capped, so the HQ is worth ' +
+      'raising without making one megacity strictly dominant.',
+  );
+  const HQ_FACTOR_CAP = C.assumed(
+    'HQ_FACTOR_CAP',
+    1.0,
+    'no published cap on HQ acceleration',
+    'Doubling at most. An uncapped factor would delete the specialization pressure plots exist to create.',
+  );
+  const GOVERNOR_QUEUE_SLOTS = C.fromWorkbook(
+    'GOVERNOR_QUEUE_SLOTS',
+    { value: 1, ref: 'Governors!"Runs in the governor\u2019s own parallel queue"' },
+    'Governor slots are separate from and parallel to the personal slots from the HQ.',
+    [1, 16],
+  );
+  const ADJACENCY_SYNERGY = C.assumed(
+    'ADJACENCY_SYNERGY',
+    0.15,
+    'Specs_EraI gives per-building adjacency percentages in prose (e.g. Sawmill +15% next to Lumber Camp) but no column',
+    'Default synergy bonus for an adjacent building named in a synergy chain, taken from the ' +
+      'most common published value.',
+  );
+  const ADJACENCY_SAME_CATEGORY = C.assumed(
+    'ADJACENCY_SAME_CATEGORY',
+    0.03,
+    'Building_Framework describes adjacency without a same-category rate',
+    'A small bonus for clustering like with like, so district planning is rewarded but not dominant.',
+  );
+  const ADJACENCY_CAP = C.assumed(
+    'ADJACENCY_CAP',
+    0.5,
+    'no published adjacency cap',
+    'Caps a perfectly planned district at +50% so layout is a meaningful edge, not a substitute for levels.',
+  );
+  const BASE_STORAGE = C.assumed(
+    'BASE_STORAGE',
+    10_000,
+    'per-building storage values are an open content task (spec §10)',
+    'Starting stockpile capacity before any Logistics building, sized so a new village overflows ' +
+      'within about a day of neglect and the attention dashboard has something to say.',
+  );
+  const STORAGE_PER_LOGISTICS = C.assumed(
+    'STORAGE_PER_LOGISTICS',
+    5_000,
+    'per-building storage values are an open content task (spec §10)',
+    'Capacity added per Logistics building, scaled by the standard output curve.',
+  );
+  const WORKERS_PER_LEVEL = C.assumed(
+    'WORKERS_PER_LEVEL',
+    0.5,
+    'Building_Framework says buildings draw Workers from population without a rate',
+    'Half a worker per level per plot, so understaffing is the normal state of a growing settlement.',
+  );
+  const UPKEEP_COIN_PER_LEVEL = C.assumed(
+    'UPKEEP_COIN_PER_LEVEL',
+    0.05,
+    'spec/04 §1 states Era II+ Coin upkeep without a rate',
+    'Coin per level per plot from Era II.',
+  );
+  const UPKEEP_POWER_PER_LEVEL = C.assumed(
+    'UPKEEP_POWER_PER_LEVEL',
+    0.02,
+    'spec/04 §1 states Era IV+ Electricity draw without a rate',
+    'Electricity per level per plot from Era IV.',
+  );
+
   // --------------------------------------------------------------- movement
   const ZOC_SPEED_MULT = C.fromSpec('ZOC_SPEED_MULT', 0.6, 'spec/03 §4 · zone of control', '0.6x speed inside a hostile fortification radius.', [0, 1]);
   const ATTRITION_PCT = C.fromSpec('ATTRITION_PCT', 0.03, 'spec/03 §4 · supply', '3% of strength per tick beyond supply range, escalating.', [0, 1]);
@@ -381,6 +537,9 @@ async function main(): Promise<void> {
     'utf8',
   );
   await writeFile(OUT_SEED, renderSeedSql(hash, { buildings, holdings, research, vetTiers, grades }), 'utf8');
+  await writeFile(OUT_ASSUMPTIONS, renderAssumptions(C, hash), 'utf8');
+
+  assertNoAssumedCoreConstants(C);
 
   const assumed = C.list('assumed');
   console.log(
@@ -994,6 +1153,82 @@ function cmp(key: string, path: string, grade: string, field: string, generated:
 // ============================================================================
 // Emitters
 // ============================================================================
+
+/**
+ * The constants that appear in spec/07 §2's formula table and §3's calibration
+ * anchors. These define the shape of the economy, so an ASSUMED value here is
+ * not a gap to fill later — it means a formula has been reimplemented from
+ * memory rather than from the workbook. Fail the build.
+ */
+const CORE_CONSTANTS = [
+  'BUILD_COST_EXP', 'BUILD_COST_GEO', 'BUILD_TIME_K', 'BUILD_TIME_EXP', 'BUILD_TIME_GEO', 'OUTPUT_EXP',
+  'TRAIN_CONST', 'VET_PER_LEVEL', 'XP_BASE', 'XP_LEVEL_EXP', 'XP_TIER_MULT',
+  'FATIGUE_LEVEL_EXP', 'FATIGUE_TIER_DIV', 'EW_KNEE', 'EW_STEEPNESS', 'EW_CAP',
+  'TIERUP_BASE', 'TIERUP_MULT', 'QI_BASE', 'QI_EXP', 'QI_GEO',
+  'SHARD_BASE', 'SHARD_PER_RANK', 'SHARD_PER_ERA', 'JOINT_BONUS_CAP', 'COUNTER_MAX',
+  'MORALE_MIN', 'MORALE_MAX', 'MAX_GRADE', 'MAX_LEVEL', 'LEVELS_PER_GRADE',
+  'LEVELS_PER_TIER', 'MAX_VET_TIER', 'ENVY_PER_SCOPE', 'FORT_PER_GRADE',
+] as const;
+
+function assertNoAssumedCoreConstants(C: ConstantSet): void {
+  const assumed = new Set(C.list('assumed').map((e) => e.name));
+  const bad = CORE_CONSTANTS.filter((n) => assumed.has(n));
+  if (bad.length > 0) {
+    throw new ImportError(
+      `these constants define the economy and may never be assumed: ${bad.join(', ')}. ` +
+        `Read them from the workbook or cite the specification section that fixes them.`,
+    );
+  }
+  for (const n of CORE_CONSTANTS) {
+    if (!C.entries.some((e) => e.name === n)) {
+      throw new ImportError(`core constant ${n} was not emitted; spec/07 §2 requires it`);
+    }
+  }
+}
+
+/**
+ * The assumptions register.
+ *
+ * spec/00 §5: "Never silently invent a balance number." Where the workbook and
+ * the specification both leave a number unstated, it is emitted with an
+ * [ASSUMED] marker AND written here, so the balance owner has a single list to
+ * work through rather than a diff to read.
+ */
+function renderAssumptions(C: ConstantSet, hash: string): string {
+  const assumed = C.list('assumed');
+  const out: string[] = [];
+  out.push('# Assumed balance constants');
+  out.push('');
+  out.push('GENERATED by `packages/tools/src/import-workbook.ts` — do not edit.');
+  out.push(`Balance revision \`${hash.slice(0, 16)}\`.`);
+  out.push('');
+  out.push('`spec/00_README_FIRST.md` §5 requires that a missing balance number is never');
+  out.push('silently invented. Each constant below is one the workbook does not carry and');
+  out.push('the specification does not fix. Each is marked `[ASSUMED]` in the generated');
+  out.push('constants module, printed by the importer on every run, and listed here for the');
+  out.push('balance owner to confirm or correct.');
+  out.push('');
+  out.push('Correcting one means adding the real value to the appropriate workbook sheet and');
+  out.push('changing its reader in the importer from `C.assumed(...)` to `C.fromWorkbook(...)`.');
+  out.push('');
+  out.push(`## ${assumed.length} open assumptions`);
+  out.push('');
+  out.push('| Constant | Assumed value | Why it is not in the workbook | Reasoning for the value |');
+  out.push('|---|---|---|---|');
+  for (const a of assumed) {
+    out.push(`| \`${a.name}\` | ${Array.isArray(a.value) ? `[${a.value.join(', ')}]` : a.value} | ${a.provenance.ref} | ${a.note} |`);
+  }
+  out.push('');
+  out.push('## What is NOT assumed');
+  out.push('');
+  out.push(`${C.list('workbook').length} constants are read directly from workbook cells,`);
+  out.push(`${C.list('spec').length} are fixed by the specification text, and`);
+  out.push(`${C.list('derived').length} are computed from the others so they cannot drift.`);
+  out.push('The constants naming the six calibration anchors and the core formula shapes can');
+  out.push('never be assumed — the importer fails the build if one ever is.');
+  out.push('');
+  return out.join('\n');
+}
 
 function renderConstants(C: ConstantSet, hash: string): string {
   const lines: string[] = [];

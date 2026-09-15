@@ -69,6 +69,17 @@ export const CONSTANT_META: Readonly<Record<string, ConstantMeta>> = Object.free
   MORALE_EXP: Object.freeze({ value: 0.25, provenance: 'assumed', ref: "GDD Appendix A does not pin the exponent; spec/07 §2 gives only the clamp", note: "Shapes how fast morale moves between the 0.5 and 1.5 clamps as relative empire size changes. 0.25 puts a 4x size disadvantage at ~1.41x morale, comfortably inside the clamp." }),
   FORT_PER_GRADE: Object.freeze({ value: 0.05, provenance: 'spec', ref: "spec/03 §5 · fortificationMult", note: "(1 + 0.05 * wallGrade)" }),
   COUNTER_MAX: Object.freeze({ value: 2.2, provenance: 'spec', ref: "spec/07 §3.5 anchor", note: "The strongest counter-matrix entry. Nothing may exceed it without review." }),
+  RANGED_PHASE_WEIGHT: Object.freeze({ value: 0.35, provenance: 'assumed', ref: "spec/03 §5 orders the phases but does not weight the ranged exchange against the main engagement", note: "The pre-contact exchange lands 35% of a full engagement, so bringing artillery matters without letting a siege train win unaccompanied." }),
+  WALL_GRADES_PER_SIEGE_SHARE: Object.freeze({ value: 6, provenance: 'assumed', ref: "spec/03 §5 says fortification damage is applied in the ranged phase without a rate", note: "A force that is entirely siege engines strips about six wall grades per assault, so walls are worn down over a campaign rather than in one battle." }),
+  AMBUSH_MAX_CHANCE: Object.freeze({ value: 0.35, provenance: 'assumed', ref: "spec/03 §5 phase 1 names ambush without probabilities", note: "Ceiling on defender ambush chance." }),
+  AMBUSH_PER_CONCEALMENT: Object.freeze({ value: 0.5, provenance: 'assumed', ref: "spec/03 §5 phase 1", note: "How much terrain concealment contributes to ambush chance." }),
+  AMBUSH_PER_SCOUTING: Object.freeze({ value: 0.4, provenance: 'assumed', ref: "spec/03 §5 phase 1", note: "How much attacker scouting suppresses it — the payoff for scouting first." }),
+  AMBUSH_PENALTY: Object.freeze({ value: 0.25, provenance: 'assumed', ref: "spec/03 §5 phase 1", note: "An ambushed attacker fights at 75%." }),
+  AMBUSH_BONUS: Object.freeze({ value: 0.15, provenance: 'assumed', ref: "spec/03 §5 phase 1", note: "An ambushing defender fights at 115%." }),
+  PURSUIT_PER_LOG_RATIO: Object.freeze({ value: 0.25, provenance: 'assumed', ref: "spec/03 §5 phase 4 calls for casualty amplification on the losing side without a rate", note: "Scales pursuit losses by the log of the power ratio, so a narrow win is not a massacre and a rout is." }),
+  PURSUIT_MAX: Object.freeze({ value: 0.6, provenance: 'assumed', ref: "spec/03 §5 phase 4", note: "Ceiling on pursuit losses, so no single battle annihilates a force outright." }),
+  SCREEN_EXPOSURE: Object.freeze({ value: 1.6, provenance: 'assumed', ref: "spec/03 §7 requires screens to absorb disproportionately but gives no exposure figure", note: "Screens take 60% more than their contribution share. This is what they are for, and it is what absorption XP pays them for." }),
+  MUNITIONS_PER_DAMAGE: Object.freeze({ value: 0.001, provenance: 'assumed', ref: "spec/03 §5 phase 6 requires Era IV+ munitions drain without a rate", note: "Munitions consumed per point of damage delivered, so industrial depth decides long wars." }),
   SHARD_BASE: Object.freeze({ value: 2, provenance: 'workbook', ref: "Chrono_Shards!R21C2", note: "ceiling = 2.0 + 0.30*constructionRank + 0.50*era" }),
   SHARD_PER_RANK: Object.freeze({ value: 0.3, provenance: 'workbook', ref: "Chrono_Shards!R22C2", note: "" }),
   SHARD_PER_ERA: Object.freeze({ value: 0.5, provenance: 'workbook', ref: "Chrono_Shards!R23C2", note: "" }),
@@ -78,6 +89,12 @@ export const CONSTANT_META: Readonly<Record<string, ConstantMeta>> = Object.free
   ENVY_WINDOW_MS: Object.freeze({ value: 86400000, provenance: 'spec', ref: "spec/04 §11", note: "Rolling 24h measurement window." }),
   TEMPORAL_DEBT_TIERS: Object.freeze({ value: 6, provenance: 'spec', ref: "spec/04 §11 · guardrail 3", note: "Karma tiers raising tribulation difficulty and suppressing Qi regen." }),
   TEMPORAL_DEBT_DECAY_MS: Object.freeze({ value: 2592000000, provenance: 'spec', ref: "spec/04 §11 · guardrail 3", note: "One tier per 30 days of abstention." }),
+  GARRISON_HP_PER_WALL_GRADE: Object.freeze({ value: 500, provenance: 'assumed', ref: "spec/03 §5 adds flat garrison HP to the defence pool without a figure", note: "Flat hit points a wall grade contributes, so a fortified settlement is never a free kill even with no garrison present." }),
+  CARRY_PER_UNIT: Object.freeze({ value: 50, provenance: 'assumed', ref: "convoy capacity by era is described in spec/04 §2 without per-unit figures", note: "Resources one unit can carry home. Bounds plunder, which is what stops a raid being a wipeout." }),
+  HIDDEN_CELLAR: Object.freeze({ value: 2000, provenance: 'assumed', ref: "spec/03 §5 names hidden-cellar protection without a figure", note: "Resources that can never be looted, so a beaten player always has something to rebuild on." }),
+  CAPTURED_LOYALTY: Object.freeze({ value: 15, provenance: 'assumed', ref: "spec/04 §9 says a settlement flips \"with low loyalty\" without a number", note: "Loyalty a freshly captured settlement starts at. Low enough to invite counter-conquest, which is the point: taking ground is meant to be easier than holding it." }),
+  STARTING_MUNITIONS: Object.freeze({ value: 1000000, provenance: 'assumed', ref: "spec/03 §5 phase 6 requires a munitions pool without a starting size", note: "Munitions a force carries into an engagement before resupply." }),
+  ENVY_MIN_SPEND_FLOOR: Object.freeze({ value: 24, provenance: 'assumed', ref: "spec/04 §11 sets the floor at \"the median player’s 30-day earned shard income\", which is a live telemetry value", note: "Minimum purchased shard-hours to appear on a Heaven’s Envy leaderboard, so a quiet scope returns fewer than ten names rather than marking a trivial spender. Replace with the live median at launch." }),
   GOVERNOR_TIME_MULT: Object.freeze({ value: 2, provenance: 'spec', ref: "spec/04 §6 · the 2x rule", note: "Anything a governor initiates takes twice as long. That field is the whole mechanic." }),
   PLAYER_TIME_MULT: Object.freeze({ value: 1, provenance: 'spec', ref: "spec/04 §6", note: "" }),
   CANCEL_REFUND_PCT: Object.freeze({ value: 0.8, provenance: 'spec', ref: "spec/05 §2 · DELETE /v1/queue/:itemId", note: "Cancelling refunds 80% of resources." }),
@@ -99,6 +116,17 @@ export const CONSTANT_META: Readonly<Record<string, ConstantMeta>> = Object.free
   ATTRITION_ESCALATION: Object.freeze({ value: 0.5, provenance: 'assumed', ref: "spec/03 §4 says attrition escalates but does not give the rate", note: "Each further hour out of supply adds 50% of the base 3% rate, so a stranded army becomes a problem to solve rather than a leak to tolerate." }),
   TEMPORAL_DEBT_HOURS_PER_TIER: Object.freeze({ value: 168, provenance: 'assumed', ref: "spec/04 §11 guardrail 3 defines six karma tiers but not the spend per tier", note: "One week of compressed time per karma tier, so reaching the top tier takes sustained buying." }),
   STATECRAFT_PER_POINT: Object.freeze({ value: 0.02, provenance: 'assumed', ref: "spec/04 §9 says loyalty damage is \"modified by Statecraft on both sides\" without a rate", note: "Each net point of Statecraft advantage moves loyalty damage by 2%, clamped to +/-50%." }),
+  HQ_FACTOR_PER_GRADE: Object.freeze({ value: 0.05, provenance: 'assumed', ref: "Category_Chassis!HQ/Governance describes HQ acceleration without a rate", note: "Each HQ grade compresses build time in its settlement by 5%, capped, so the HQ is worth raising without making one megacity strictly dominant." }),
+  HQ_FACTOR_CAP: Object.freeze({ value: 1, provenance: 'assumed', ref: "no published cap on HQ acceleration", note: "Doubling at most. An uncapped factor would delete the specialization pressure plots exist to create." }),
+  GOVERNOR_QUEUE_SLOTS: Object.freeze({ value: 1, provenance: 'workbook', ref: "Governors!\"Runs in the governor’s own parallel queue\"", note: "Governor slots are separate from and parallel to the personal slots from the HQ." }),
+  ADJACENCY_SYNERGY: Object.freeze({ value: 0.15, provenance: 'assumed', ref: "Specs_EraI gives per-building adjacency percentages in prose (e.g. Sawmill +15% next to Lumber Camp) but no column", note: "Default synergy bonus for an adjacent building named in a synergy chain, taken from the most common published value." }),
+  ADJACENCY_SAME_CATEGORY: Object.freeze({ value: 0.03, provenance: 'assumed', ref: "Building_Framework describes adjacency without a same-category rate", note: "A small bonus for clustering like with like, so district planning is rewarded but not dominant." }),
+  ADJACENCY_CAP: Object.freeze({ value: 0.5, provenance: 'assumed', ref: "no published adjacency cap", note: "Caps a perfectly planned district at +50% so layout is a meaningful edge, not a substitute for levels." }),
+  BASE_STORAGE: Object.freeze({ value: 10000, provenance: 'assumed', ref: "per-building storage values are an open content task (spec §10)", note: "Starting stockpile capacity before any Logistics building, sized so a new village overflows within about a day of neglect and the attention dashboard has something to say." }),
+  STORAGE_PER_LOGISTICS: Object.freeze({ value: 5000, provenance: 'assumed', ref: "per-building storage values are an open content task (spec §10)", note: "Capacity added per Logistics building, scaled by the standard output curve." }),
+  WORKERS_PER_LEVEL: Object.freeze({ value: 0.5, provenance: 'assumed', ref: "Building_Framework says buildings draw Workers from population without a rate", note: "Half a worker per level per plot, so understaffing is the normal state of a growing settlement." }),
+  UPKEEP_COIN_PER_LEVEL: Object.freeze({ value: 0.05, provenance: 'assumed', ref: "spec/04 §1 states Era II+ Coin upkeep without a rate", note: "Coin per level per plot from Era II." }),
+  UPKEEP_POWER_PER_LEVEL: Object.freeze({ value: 0.02, provenance: 'assumed', ref: "spec/04 §1 states Era IV+ Electricity draw without a rate", note: "Electricity per level per plot from Era IV." }),
   ZOC_SPEED_MULT: Object.freeze({ value: 0.6, provenance: 'spec', ref: "spec/03 §4 · zone of control", note: "0.6x speed inside a hostile fortification radius." }),
   ATTRITION_PCT: Object.freeze({ value: 0.03, provenance: 'spec', ref: "spec/03 §4 · supply", note: "3% of strength per tick beyond supply range, escalating." }),
   ATTRITION_INTERVAL_MS: Object.freeze({ value: 3600000, provenance: 'spec', ref: "spec/03 §4", note: "One attrition tick per hour out of supply." }),
@@ -200,6 +228,28 @@ export const C = Object.freeze({
   FORT_PER_GRADE: 0.05,
   /** The strongest counter-matrix entry. Nothing may exceed it without review. — spec/07 §3.5 anchor */
   COUNTER_MAX: 2.2,
+  /** The pre-contact exchange lands 35% of a full engagement, so bringing artillery matters without letting a siege train win unaccompanied. — [ASSUMED] spec/03 §5 orders the phases but does not weight the ranged exchange against the main engagement */
+  RANGED_PHASE_WEIGHT: 0.35,
+  /** A force that is entirely siege engines strips about six wall grades per assault, so walls are worn down over a campaign rather than in one battle. — [ASSUMED] spec/03 §5 says fortification damage is applied in the ranged phase without a rate */
+  WALL_GRADES_PER_SIEGE_SHARE: 6,
+  /** Ceiling on defender ambush chance. — [ASSUMED] spec/03 §5 phase 1 names ambush without probabilities */
+  AMBUSH_MAX_CHANCE: 0.35,
+  /** How much terrain concealment contributes to ambush chance. — [ASSUMED] spec/03 §5 phase 1 */
+  AMBUSH_PER_CONCEALMENT: 0.5,
+  /** How much attacker scouting suppresses it — the payoff for scouting first. — [ASSUMED] spec/03 §5 phase 1 */
+  AMBUSH_PER_SCOUTING: 0.4,
+  /** An ambushed attacker fights at 75%. — [ASSUMED] spec/03 §5 phase 1 */
+  AMBUSH_PENALTY: 0.25,
+  /** An ambushing defender fights at 115%. — [ASSUMED] spec/03 §5 phase 1 */
+  AMBUSH_BONUS: 0.15,
+  /** Scales pursuit losses by the log of the power ratio, so a narrow win is not a massacre and a rout is. — [ASSUMED] spec/03 §5 phase 4 calls for casualty amplification on the losing side without a rate */
+  PURSUIT_PER_LOG_RATIO: 0.25,
+  /** Ceiling on pursuit losses, so no single battle annihilates a force outright. — [ASSUMED] spec/03 §5 phase 4 */
+  PURSUIT_MAX: 0.6,
+  /** Screens take 60% more than their contribution share. This is what they are for, and it is what absorption XP pays them for. — [ASSUMED] spec/03 §7 requires screens to absorb disproportionately but gives no exposure figure */
+  SCREEN_EXPOSURE: 1.6,
+  /** Munitions consumed per point of damage delivered, so industrial depth decides long wars. — [ASSUMED] spec/03 §5 phase 6 requires Era IV+ munitions drain without a rate */
+  MUNITIONS_PER_DAMAGE: 0.001,
   /** ceiling = 2.0 + 0.30*constructionRank + 0.50*era — Chrono_Shards!R21C2 */
   SHARD_BASE: 2,
   /** Chrono_Shards!R22C2 */
@@ -218,6 +268,18 @@ export const C = Object.freeze({
   TEMPORAL_DEBT_TIERS: 6,
   /** One tier per 30 days of abstention. — spec/04 §11 · guardrail 3 */
   TEMPORAL_DEBT_DECAY_MS: 2592000000,
+  /** Flat hit points a wall grade contributes, so a fortified settlement is never a free kill even with no garrison present. — [ASSUMED] spec/03 §5 adds flat garrison HP to the defence pool without a figure */
+  GARRISON_HP_PER_WALL_GRADE: 500,
+  /** Resources one unit can carry home. Bounds plunder, which is what stops a raid being a wipeout. — [ASSUMED] convoy capacity by era is described in spec/04 §2 without per-unit figures */
+  CARRY_PER_UNIT: 50,
+  /** Resources that can never be looted, so a beaten player always has something to rebuild on. — [ASSUMED] spec/03 §5 names hidden-cellar protection without a figure */
+  HIDDEN_CELLAR: 2000,
+  /** Loyalty a freshly captured settlement starts at. Low enough to invite counter-conquest, which is the point: taking ground is meant to be easier than holding it. — [ASSUMED] spec/04 §9 says a settlement flips "with low loyalty" without a number */
+  CAPTURED_LOYALTY: 15,
+  /** Munitions a force carries into an engagement before resupply. — [ASSUMED] spec/03 §5 phase 6 requires a munitions pool without a starting size */
+  STARTING_MUNITIONS: 1000000,
+  /** Minimum purchased shard-hours to appear on a Heaven’s Envy leaderboard, so a quiet scope returns fewer than ten names rather than marking a trivial spender. Replace with the live median at launch. — [ASSUMED] spec/04 §11 sets the floor at "the median player’s 30-day earned shard income", which is a live telemetry value */
+  ENVY_MIN_SPEND_FLOOR: 24,
   /** Anything a governor initiates takes twice as long. That field is the whole mechanic. — spec/04 §6 · the 2x rule */
   GOVERNOR_TIME_MULT: 2,
   /** spec/04 §6 */
@@ -260,6 +322,28 @@ export const C = Object.freeze({
   TEMPORAL_DEBT_HOURS_PER_TIER: 168,
   /** Each net point of Statecraft advantage moves loyalty damage by 2%, clamped to +/-50%. — [ASSUMED] spec/04 §9 says loyalty damage is "modified by Statecraft on both sides" without a rate */
   STATECRAFT_PER_POINT: 0.02,
+  /** Each HQ grade compresses build time in its settlement by 5%, capped, so the HQ is worth raising without making one megacity strictly dominant. — [ASSUMED] Category_Chassis!HQ/Governance describes HQ acceleration without a rate */
+  HQ_FACTOR_PER_GRADE: 0.05,
+  /** Doubling at most. An uncapped factor would delete the specialization pressure plots exist to create. — [ASSUMED] no published cap on HQ acceleration */
+  HQ_FACTOR_CAP: 1,
+  /** Governor slots are separate from and parallel to the personal slots from the HQ. — Governors!"Runs in the governor’s own parallel queue" */
+  GOVERNOR_QUEUE_SLOTS: 1,
+  /** Default synergy bonus for an adjacent building named in a synergy chain, taken from the most common published value. — [ASSUMED] Specs_EraI gives per-building adjacency percentages in prose (e.g. Sawmill +15% next to Lumber Camp) but no column */
+  ADJACENCY_SYNERGY: 0.15,
+  /** A small bonus for clustering like with like, so district planning is rewarded but not dominant. — [ASSUMED] Building_Framework describes adjacency without a same-category rate */
+  ADJACENCY_SAME_CATEGORY: 0.03,
+  /** Caps a perfectly planned district at +50% so layout is a meaningful edge, not a substitute for levels. — [ASSUMED] no published adjacency cap */
+  ADJACENCY_CAP: 0.5,
+  /** Starting stockpile capacity before any Logistics building, sized so a new village overflows within about a day of neglect and the attention dashboard has something to say. — [ASSUMED] per-building storage values are an open content task (spec §10) */
+  BASE_STORAGE: 10000,
+  /** Capacity added per Logistics building, scaled by the standard output curve. — [ASSUMED] per-building storage values are an open content task (spec §10) */
+  STORAGE_PER_LOGISTICS: 5000,
+  /** Half a worker per level per plot, so understaffing is the normal state of a growing settlement. — [ASSUMED] Building_Framework says buildings draw Workers from population without a rate */
+  WORKERS_PER_LEVEL: 0.5,
+  /** Coin per level per plot from Era II. — [ASSUMED] spec/04 §1 states Era II+ Coin upkeep without a rate */
+  UPKEEP_COIN_PER_LEVEL: 0.05,
+  /** Electricity per level per plot from Era IV. — [ASSUMED] spec/04 §1 states Era IV+ Electricity draw without a rate */
+  UPKEEP_POWER_PER_LEVEL: 0.02,
   /** 0.6x speed inside a hostile fortification radius. — spec/03 §4 · zone of control */
   ZOC_SPEED_MULT: 0.6,
   /** 3% of strength per tick beyond supply range, escalating. — spec/03 §4 · supply */
@@ -280,4 +364,4 @@ export type Constants = typeof C;
 export const BALANCE_REVISION = "910ad42c80c5a25e0bd3fc2647d71b985f8d7175f2bf88b6a6ced0769d55b2f4" as const;
 
 /** Constants the balance owner still has to confirm (spec/00 §5). */
-export const ASSUMED_CONSTANTS: readonly string[] = Object.freeze(["MORALE_EXP", "CULTURE_PRESSURE_K", "CULTURE_PRESSURE_CAP", "ATTRITION_ESCALATION", "TEMPORAL_DEBT_HOURS_PER_TIER", "STATECRAFT_PER_POINT"]);
+export const ASSUMED_CONSTANTS: readonly string[] = Object.freeze(["MORALE_EXP", "RANGED_PHASE_WEIGHT", "WALL_GRADES_PER_SIEGE_SHARE", "AMBUSH_MAX_CHANCE", "AMBUSH_PER_CONCEALMENT", "AMBUSH_PER_SCOUTING", "AMBUSH_PENALTY", "AMBUSH_BONUS", "PURSUIT_PER_LOG_RATIO", "PURSUIT_MAX", "SCREEN_EXPOSURE", "MUNITIONS_PER_DAMAGE", "GARRISON_HP_PER_WALL_GRADE", "CARRY_PER_UNIT", "HIDDEN_CELLAR", "CAPTURED_LOYALTY", "STARTING_MUNITIONS", "ENVY_MIN_SPEND_FLOOR", "CULTURE_PRESSURE_K", "CULTURE_PRESSURE_CAP", "ATTRITION_ESCALATION", "TEMPORAL_DEBT_HOURS_PER_TIER", "STATECRAFT_PER_POINT", "HQ_FACTOR_PER_GRADE", "HQ_FACTOR_CAP", "ADJACENCY_SYNERGY", "ADJACENCY_SAME_CATEGORY", "ADJACENCY_CAP", "BASE_STORAGE", "STORAGE_PER_LOGISTICS", "WORKERS_PER_LEVEL", "UPKEEP_COIN_PER_LEVEL", "UPKEEP_POWER_PER_LEVEL"]);
