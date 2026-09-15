@@ -1,0 +1,19 @@
+{
+  "name": "@ascendance/tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "import": "tsx src/import-workbook.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "echo \"(tools: covered by the importer's own assertions)\""
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "tsx": "^4.19.2",
+    "@types/node": "^22.13.1"
+  }
+}
