@@ -1,0 +1,274 @@
+/*
+ * styles.css — the visual system
+ *
+ * DESIGN CONSTRAINT THAT SHAPES EVERYTHING (spec/06 §1): every meaningful
+ * action must be completable in a ten-minute mobile session. Deep planning
+ * tools may reward a desktop, but nothing important may REQUIRE one. So this
+ * is a mobile-first layout that widens, not a desktop layout that shrinks.
+ *
+ * ACCESSIBILITY (spec/06 §6): colour is never the only carrier of meaning.
+ * Ownership, alliance standing and damage state each carry a glyph or a label
+ * as well as a hue.
+ */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #0f1216;
+  --bg-raised: #161b22;
+  --bg-sunken: #0b0e12;
+  --line: #242c38;
+  --line-bright: #33415a;
+
+  --text: #e6edf3;
+  --text-dim: #93a1b1;
+  --text-faint: #5f6d7e;
+
+  --accent: #d9a441;        /* the dynasty gold that runs through the game */
+  --accent-dim: #8a6a2a;
+  --danger: #e05656;
+  --warn: #e0a656;
+  --ok: #5ac08a;
+  --cool: #6f9bd1;
+  --envy: #b06fd1;          /* Heaven's Envy — meant to be seen */
+
+  --radius: 10px;
+  --shadow: 0 1px 0 rgba(255, 255, 255, 0.03), 0 8px 24px rgba(0, 0, 0, 0.45);
+
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: none;
+}
+
+/* Tabular numerals everywhere a number is compared against another number. */
+.num, .timer, td.num { font-variant-numeric: tabular-nums; }
+
+button, input, select { font: inherit; color: inherit; }
+
+button {
+  background: var(--bg-raised);
+  border: 1px solid var(--line-bright);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  /* Touch targets stay finger-sized: this is a phone game first. */
+  min-height: 40px;
+}
+button:hover:not(:disabled) { border-color: var(--accent-dim); }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #17130a; font-weight: 600; }
+button.danger { border-color: var(--danger); color: var(--danger); }
+button.ghost { background: transparent; border-color: var(--line); }
+button.small { padding: 4px 9px; min-height: 30px; font-size: 12px; }
+
+a { color: var(--cool); }
+
+/* ------------------------------------------------------------------ shell */
+
+.app { display: flex; flex-direction: column; height: 100%; }
+
+.topbar {
+  display: flex; align-items: center; gap: 12px;
+  padding: calc(10px + var(--safe-top)) 14px 10px;
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 20;
+}
+.brand { font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; font-size: 12px; color: var(--accent); }
+.topbar .spacer { flex: 1; }
+.topbar .stat { font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+.topbar .stat b { color: var(--text); font-weight: 600; }
+
+.main { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.page { max-width: 1100px; margin: 0 auto; padding: 16px 14px calc(96px + var(--safe-bottom)); }
+
+.tabs {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+  display: flex; gap: 2px;
+  background: var(--bg-sunken);
+  border-top: 1px solid var(--line);
+  padding: 6px 6px calc(6px + var(--safe-bottom));
+}
+.tabs button {
+  flex: 1; min-width: 0; background: transparent; border: none; border-radius: 8px;
+  padding: 8px 2px; font-size: 11px; color: var(--text-faint); display: grid; gap: 2px; justify-items: center;
+}
+.tabs button .glyph { font-size: 17px; line-height: 1; }
+.tabs button[aria-current='true'] { color: var(--accent); background: rgba(217, 164, 65, 0.09); }
+.tabs button .badge {
+  position: absolute; transform: translate(16px, -4px);
+  background: var(--danger); color: #fff; border-radius: 9px;
+  font-size: 10px; padding: 0 5px; font-weight: 700;
+}
+
+/* ------------------------------------------------------------------- type */
+
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 15px; margin: 22px 0 10px; letter-spacing: 0.02em; }
+h3 { font-size: 13px; margin: 0 0 6px; }
+p  { margin: 0 0 10px; color: var(--text-dim); }
+.lede { color: var(--text-dim); margin-bottom: 18px; max-width: 62ch; }
+.dim { color: var(--text-dim); }
+.faint { color: var(--text-faint); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+
+/* ------------------------------------------------------------------ cards */
+
+.card {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-bottom: 10px;
+}
+.card.flush { padding: 0; overflow: hidden; }
+
+.grid { display: grid; gap: 10px; }
+@media (min-width: 720px) { .grid.two { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 900px) { .grid.three { grid-template-columns: repeat(3, 1fr); } }
+
+.row { display: flex; align-items: center; gap: 10px; }
+.row.wrap { flex-wrap: wrap; }
+.row .spacer { flex: 1; }
+
+/* -------------------------------------------------------- attention feed */
+
+/*
+ * The home screen. With no cap on holdings and full production isolation this
+ * is where players live; if it is bad, nothing else matters (spec/06 §3).
+ *
+ * The left rule is a second, redundant carrier of urgency alongside the label,
+ * so severity survives both colour-blindness and a glance.
+ */
+.att {
+  display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  border-left: 3px solid transparent;
+}
+.att:last-child { border-bottom: none; }
+.att .glyph { font-size: 18px; width: 22px; text-align: center; }
+.att .title { font-weight: 600; }
+.att .detail { color: var(--text-dim); font-size: 12.5px; margin-top: 2px; }
+.att .kindlabel {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-faint); margin-bottom: 3px;
+}
+.att.u-critical { border-left-color: var(--danger); }
+.att.u-high     { border-left-color: var(--warn); }
+.att.u-normal   { border-left-color: var(--line-bright); }
+.att.u-low      { border-left-color: transparent; }
+
+.timer { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.timer.urgent { color: var(--danger); font-weight: 600; }
+
+/* ----------------------------------------------------------------- tables */
+
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
+th { color: var(--text-faint); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: none; }
+
+.scroll-x { overflow-x: auto; }
+
+/* ------------------------------------------------------------------- bits */
+
+.pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--bg-sunken); border: 1px solid var(--line);
+  border-radius: 999px; padding: 2px 9px; font-size: 11.5px; color: var(--text-dim);
+}
+.pill.ok { color: var(--ok); border-color: rgba(90, 192, 138, 0.35); }
+.pill.warn { color: var(--warn); border-color: rgba(224, 166, 86, 0.35); }
+.pill.danger { color: var(--danger); border-color: rgba(224, 86, 86, 0.35); }
+.pill.envy { color: var(--envy); border-color: rgba(176, 111, 209, 0.45); }
+
+.bar { height: 6px; background: var(--bg-sunken); border-radius: 4px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--accent); }
+.bar.ok > i { background: var(--ok); }
+.bar.warn > i { background: var(--warn); }
+.bar.danger > i { background: var(--danger); }
+
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 13px; }
+.kv dt { color: var(--text-faint); }
+.kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+hr { border: none; border-top: 1px solid var(--line); margin: 16px 0; }
+
+/* ----------------------------------------------------------------- toasts */
+
+.toasts {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(76px + var(--safe-bottom)); z-index: 40;
+  display: grid; gap: 8px; width: min(560px, calc(100vw - 24px));
+}
+.toast {
+  background: var(--bg-raised); border: 1px solid var(--line-bright);
+  border-left: 3px solid var(--line-bright);
+  border-radius: 8px; padding: 10px 12px; box-shadow: var(--shadow);
+}
+.toast.ok { border-left-color: var(--ok); }
+.toast.warn { border-left-color: var(--warn); }
+.toast.error { border-left-color: var(--danger); }
+.toast .t { font-weight: 600; font-size: 13px; }
+.toast .d { color: var(--text-dim); font-size: 12.5px; margin-top: 3px; }
+
+/* ------------------------------------------------------------------- map */
+
+.mapwrap { position: relative; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--bg-sunken); }
+.mapwrap canvas { display: block; width: 100%; touch-action: none; cursor: grab; }
+.mapwrap canvas:active { cursor: grabbing; }
+.maphud {
+  position: absolute; left: 10px; bottom: 10px;
+  display: flex; gap: 6px; align-items: center;
+  background: rgba(11, 14, 18, 0.85); border: 1px solid var(--line);
+  border-radius: 8px; padding: 5px 8px; font-size: 11.5px; color: var(--text-dim);
+}
+.maplegend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; font-size: 11.5px; color: var(--text-dim); }
+.maplegend span { display: inline-flex; align-items: center; gap: 5px; }
+.swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+
+/* -------------------------------------------------------- battle report */
+
+/*
+ * All combat maths is SHOWN, not summarised. A player should be able to
+ * reconstruct any result by hand from this (spec/06 §6, invariant §2.7).
+ */
+.phase { border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 10px; overflow: hidden; }
+.phase > header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; background: var(--bg-sunken); border-bottom: 1px solid var(--line);
+}
+.phase > header .n {
+  width: 20px; height: 20px; border-radius: 50%; background: var(--line-bright);
+  display: grid; place-items: center; font-size: 11px; font-weight: 700;
+}
+.phase .body { padding: 12px; }
+.capnote { color: var(--warn); font-size: 12px; margin-top: 6px; }
+
+.empty { text-align: center; padding: 40px 16px; color: var(--text-faint); }
+
+.notice {
+  background: rgba(111, 155, 209, 0.08);
+  border: 1px solid rgba(111, 155, 209, 0.3);
+  border-radius: var(--radius); padding: 11px 13px; font-size: 12.5px; margin-bottom: 14px;
+}
+.notice b { color: var(--text); }
+
+.loading { display: grid; place-items: center; height: 100%; color: var(--text-faint); gap: 10px; }
+
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
