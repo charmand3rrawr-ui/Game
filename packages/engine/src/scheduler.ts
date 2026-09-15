@@ -43,22 +43,49 @@ export interface DrainResult {
 }
 
 /**
- * Deterministic id generation.
+ * Deterministic UUIDv7 generation.
  *
- * Event ids order two events that share a timestamp, so they must be stable
- * across a replay. UUIDv7's random tail is not, which is why ids here are
- * derived from a counter seeded per world rather than from `crypto.randomUUID`.
- * The prefix keeps them time-ordered and index-friendly, as spec/02 asks.
+ * spec/02 requires UUIDv7 primary keys — time-ordered and index-friendly — and
+ * invariant §2.2 requires that a world replays identically from its event log.
+ * Those pull in opposite directions: a standard UUIDv7 fills 74 bits with
+ * randomness, and ids are what order two events sharing a timestamp, so random
+ * ids would make a replay resolve simultaneous battles in a different order.
+ *
+ * So the layout is a real UUIDv7 with the random bits replaced by a monotonic
+ * per-world counter and a hash of the world id:
+ *
+ *   018bcfe5-6800-7abc-8000-00000015a1b2
+ *   \_________ _________/ \_/\_/ \_/ \____ ____/
+ *             v            |   |   |       |
+ *   48-bit timestamp   version |  variant  counter + world hash
+ *                        kind tag
+ *
+ * The result sorts by creation time, is unique within a world, is a valid
+ * UUIDv7 to anything that parses one, and is reproduced exactly by a replay.
  */
 export class IdFactory {
   private counter = 0;
+  private readonly worldTag: number;
 
-  constructor(private readonly worldId: string) {}
+  constructor(private readonly worldId: string) {
+    this.worldTag = hash16(worldId);
+  }
 
-  next(prefix: string, at: Millis): Uuid {
-    const seq = (this.counter++).toString(16).padStart(8, '0');
-    const ts = at.toString(16).padStart(12, '0');
-    return `${prefix}-${ts}-${seq}-${this.worldId.slice(0, 8)}`;
+  /**
+   * `kind` is a short tag ('st', 'f', 'q') folded into the UUID's `rand_a`
+   * field. It carries no meaning to anything that reads the id, but it keeps a
+   * settlement id and a formation id from colliding when the counter and
+   * timestamp happen to match, and makes a raw id greppable back to its table.
+   */
+  next(kind: string, at: Millis): Uuid {
+    const n = this.counter++;
+    const ts = (at & 0xffffffffffffn).toString(16).padStart(12, '0');
+    const kindNibbles = (hash16(kind) & 0xfff).toString(16).padStart(3, '0');
+    // Variant bits `10` -> the first nibble of group 4 is one of 8, 9, a, b.
+    const variant = (0x8 | ((n >>> 30) & 0x3)).toString(16);
+    const rest = ((n & 0x3fffffff) >>> 0).toString(16).padStart(8, '0');
+    const tag = (this.worldTag & 0xffff).toString(16).padStart(4, '0');
+    return `${ts.slice(0, 8)}-${ts.slice(8, 12)}-7${kindNibbles}-${variant}${tag.slice(0, 3)}-${tag.slice(3)}${rest}${(n & 0xf).toString(16).padStart(3, '0')}`;
   }
 
   /** Restore the counter when resuming a world, so ids never collide. */
@@ -69,6 +96,16 @@ export class IdFactory {
   get issued(): number {
     return this.counter;
   }
+}
+
+/** A small, stable hash. Not cryptographic — it only has to be reproducible. */
+function hash16(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h ^ (h >>> 16)) >>> 0;
 }
 
 export class Scheduler {

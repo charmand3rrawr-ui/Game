@@ -19,13 +19,13 @@ changing its reader in the importer from `C.assumed(...)` to `C.fromWorkbook(...
 | `MORALE_EXP` | 0.25 | GDD Appendix A does not pin the exponent; spec/07 §2 gives only the clamp | Shapes how fast morale moves between the 0.5 and 1.5 clamps as relative empire size changes. 0.25 puts a 4x size disadvantage at ~1.41x morale, comfortably inside the clamp. |
 | `RANGED_PHASE_WEIGHT` | 0.35 | spec/03 §5 orders the phases but does not weight the ranged exchange against the main engagement | The pre-contact exchange lands 35% of a full engagement, so bringing artillery matters without letting a siege train win unaccompanied. |
 | `WALL_GRADES_PER_SIEGE_SHARE` | 6 | spec/03 §5 says fortification damage is applied in the ranged phase without a rate | A force that is entirely siege engines strips about six wall grades per assault, so walls are worn down over a campaign rather than in one battle. |
-| `AMBUSH_MAX_CHANCE` | 0.35 | spec/03 §5 phase 1 names ambush without probabilities | Ceiling on defender ambush chance. |
-| `AMBUSH_PER_CONCEALMENT` | 0.5 | spec/03 §5 phase 1 | How much terrain concealment contributes to ambush chance. |
-| `AMBUSH_PER_SCOUTING` | 0.4 | spec/03 §5 phase 1 | How much attacker scouting suppresses it — the payoff for scouting first. |
-| `AMBUSH_PENALTY` | 0.25 | spec/03 §5 phase 1 | An ambushed attacker fights at 75%. |
-| `AMBUSH_BONUS` | 0.15 | spec/03 §5 phase 1 | An ambushing defender fights at 115%. |
+| `AMBUSH_MAX_CHANCE` | 0.35 | spec/03 §5 phase 1 names intel, concealment and ambush chance without probabilities | Ceiling on the defender’s ambush chance. Capped so that scouting can always reduce the risk meaningfully and no terrain makes an attack a coin flip. |
+| `AMBUSH_PER_CONCEALMENT` | 0.5 | spec/03 §5 phase 1 names terrain concealment as an ambush input without a rate | How much terrain concealment contributes to ambush chance. Fully concealed ground reaches the cap on its own, which is what makes terrain worth fighting for. |
+| `AMBUSH_PER_SCOUTING` | 0.4 | spec/03 §5 phase 1 names scouting quality as an ambush input without a rate | How much attacker scouting suppresses ambush chance. Set below the concealment rate so scouting is the payoff for preparation without ever making terrain irrelevant. |
+| `AMBUSH_PENALTY` | 0.25 | spec/03 §5 phase 1 states that ambush happens, not what it costs | An ambushed attacker fights at 75%. Large enough that failing to scout is a real mistake, small enough that it does not by itself decide a well-prepared assault. |
+| `AMBUSH_BONUS` | 0.15 | spec/03 §5 phase 1 states that ambush happens, not what it grants | An ambushing defender fights at 115%. Deliberately smaller than the attacker’s penalty, so ambush is a disruption of the attack rather than a defensive multiplier to farm. |
 | `PURSUIT_PER_LOG_RATIO` | 0.25 | spec/03 §5 phase 4 calls for casualty amplification on the losing side without a rate | Scales pursuit losses by the log of the power ratio, so a narrow win is not a massacre and a rout is. |
-| `PURSUIT_MAX` | 0.6 | spec/03 §5 phase 4 | Ceiling on pursuit losses, so no single battle annihilates a force outright. |
+| `PURSUIT_MAX` | 0.6 | spec/03 §5 phase 4 requires casualty amplification on the losing side without a ceiling | Ceiling on pursuit losses. No single battle annihilates a force outright, so a beaten player always has a core to withdraw and rebuild around. |
 | `SCREEN_EXPOSURE` | 1.6 | spec/03 §7 requires screens to absorb disproportionately but gives no exposure figure | Screens take 60% more than their contribution share. This is what they are for, and it is what absorption XP pays them for. |
 | `MUNITIONS_PER_DAMAGE` | 0.001 | spec/03 §5 phase 6 requires Era IV+ munitions drain without a rate | Munitions consumed per point of damage delivered, so industrial depth decides long wars. |
 | `GARRISON_HP_PER_WALL_GRADE` | 500 | spec/03 §5 adds flat garrison HP to the defence pool without a figure | Flat hit points a wall grade contributes, so a fortified settlement is never a free kill even with no garrison present. |
@@ -47,8 +47,8 @@ changing its reader in the importer from `C.assumed(...)` to `C.fromWorkbook(...
 | `BASE_STORAGE` | 10000 | per-building storage values are an open content task (spec §10) | Starting stockpile capacity before any Logistics building, sized so a new village overflows within about a day of neglect and the attention dashboard has something to say. |
 | `STORAGE_PER_LOGISTICS` | 5000 | per-building storage values are an open content task (spec §10) | Capacity added per Logistics building, scaled by the standard output curve. |
 | `WORKERS_PER_LEVEL` | 0.5 | Building_Framework says buildings draw Workers from population without a rate | Half a worker per level per plot, so understaffing is the normal state of a growing settlement. |
-| `UPKEEP_COIN_PER_LEVEL` | 0.05 | spec/04 §1 states Era II+ Coin upkeep without a rate | Coin per level per plot from Era II. |
-| `UPKEEP_POWER_PER_LEVEL` | 0.02 | spec/04 §1 states Era IV+ Electricity draw without a rate | Electricity per level per plot from Era IV. |
+| `UPKEEP_COIN_PER_LEVEL` | 0.05 | spec/04 §1 states Era II+ Coin upkeep without a rate | Coin per level per plot from Era II. Sized so a settlement of ordinary buildings pays its own way and an over-built one does not, which is what makes Brownout a real pressure. |
+| `UPKEEP_POWER_PER_LEVEL` | 0.02 | spec/04 §1 states Era IV+ Electricity draw without a rate | Electricity per level per plot from Era IV. Lower than the Coin rate because power is a second, narrower constraint layered on top rather than a replacement for it. |
 
 ## What is NOT assumed
 

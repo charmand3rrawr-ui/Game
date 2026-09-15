@@ -290,11 +290,41 @@ async function main(): Promise<void> {
     'A force that is entirely siege engines strips about six wall grades per assault, ' +
       'so walls are worn down over a campaign rather than in one battle.',
   );
-  const AMBUSH_MAX_CHANCE = C.assumed('AMBUSH_MAX_CHANCE', 0.35, 'spec/03 §5 phase 1 names ambush without probabilities', 'Ceiling on defender ambush chance.');
-  const AMBUSH_PER_CONCEALMENT = C.assumed('AMBUSH_PER_CONCEALMENT', 0.5, 'spec/03 §5 phase 1', 'How much terrain concealment contributes to ambush chance.');
-  const AMBUSH_PER_SCOUTING = C.assumed('AMBUSH_PER_SCOUTING', 0.4, 'spec/03 §5 phase 1', 'How much attacker scouting suppresses it — the payoff for scouting first.');
-  const AMBUSH_PENALTY = C.assumed('AMBUSH_PENALTY', 0.25, 'spec/03 §5 phase 1', 'An ambushed attacker fights at 75%.');
-  const AMBUSH_BONUS = C.assumed('AMBUSH_BONUS', 0.15, 'spec/03 §5 phase 1', 'An ambushing defender fights at 115%.');
+  const AMBUSH_MAX_CHANCE = C.assumed(
+    'AMBUSH_MAX_CHANCE',
+    0.35,
+    'spec/03 §5 phase 1 names intel, concealment and ambush chance without probabilities',
+    'Ceiling on the defender\u2019s ambush chance. Capped so that scouting can always reduce the ' +
+      'risk meaningfully and no terrain makes an attack a coin flip.',
+  );
+  const AMBUSH_PER_CONCEALMENT = C.assumed(
+    'AMBUSH_PER_CONCEALMENT',
+    0.5,
+    'spec/03 §5 phase 1 names terrain concealment as an ambush input without a rate',
+    'How much terrain concealment contributes to ambush chance. Fully concealed ground reaches ' +
+      'the cap on its own, which is what makes terrain worth fighting for.',
+  );
+  const AMBUSH_PER_SCOUTING = C.assumed(
+    'AMBUSH_PER_SCOUTING',
+    0.4,
+    'spec/03 §5 phase 1 names scouting quality as an ambush input without a rate',
+    'How much attacker scouting suppresses ambush chance. Set below the concealment rate so ' +
+      'scouting is the payoff for preparation without ever making terrain irrelevant.',
+  );
+  const AMBUSH_PENALTY = C.assumed(
+    'AMBUSH_PENALTY',
+    0.25,
+    'spec/03 §5 phase 1 states that ambush happens, not what it costs',
+    'An ambushed attacker fights at 75%. Large enough that failing to scout is a real mistake, ' +
+      'small enough that it does not by itself decide a well-prepared assault.',
+  );
+  const AMBUSH_BONUS = C.assumed(
+    'AMBUSH_BONUS',
+    0.15,
+    'spec/03 §5 phase 1 states that ambush happens, not what it grants',
+    'An ambushing defender fights at 115%. Deliberately smaller than the attacker\u2019s penalty, ' +
+      'so ambush is a disruption of the attack rather than a defensive multiplier to farm.',
+  );
   const PURSUIT_PER_LOG_RATIO = C.assumed(
     'PURSUIT_PER_LOG_RATIO',
     0.25,
@@ -302,7 +332,13 @@ async function main(): Promise<void> {
     'Scales pursuit losses by the log of the power ratio, so a narrow win is not a massacre ' +
       'and a rout is.',
   );
-  const PURSUIT_MAX = C.assumed('PURSUIT_MAX', 0.6, 'spec/03 §5 phase 4', 'Ceiling on pursuit losses, so no single battle annihilates a force outright.');
+  const PURSUIT_MAX = C.assumed(
+    'PURSUIT_MAX',
+    0.6,
+    'spec/03 §5 phase 4 requires casualty amplification on the losing side without a ceiling',
+    'Ceiling on pursuit losses. No single battle annihilates a force outright, so a beaten ' +
+      'player always has a core to withdraw and rebuild around.',
+  );
   const SCREEN_EXPOSURE = C.assumed(
     'SCREEN_EXPOSURE',
     1.6,
@@ -501,13 +537,15 @@ async function main(): Promise<void> {
     'UPKEEP_COIN_PER_LEVEL',
     0.05,
     'spec/04 §1 states Era II+ Coin upkeep without a rate',
-    'Coin per level per plot from Era II.',
+    'Coin per level per plot from Era II. Sized so a settlement of ordinary buildings pays its ' +
+      'own way and an over-built one does not, which is what makes Brownout a real pressure.',
   );
   const UPKEEP_POWER_PER_LEVEL = C.assumed(
     'UPKEEP_POWER_PER_LEVEL',
     0.02,
     'spec/04 §1 states Era IV+ Electricity draw without a rate',
-    'Electricity per level per plot from Era IV.',
+    'Electricity per level per plot from Era IV. Lower than the Coin rate because power is a ' +
+      'second, narrower constraint layered on top rather than a replacement for it.',
   );
 
   // --------------------------------------------------------------- movement

@@ -71,13 +71,13 @@ export const CONSTANT_META: Readonly<Record<string, ConstantMeta>> = Object.free
   COUNTER_MAX: Object.freeze({ value: 2.2, provenance: 'spec', ref: "spec/07 §3.5 anchor", note: "The strongest counter-matrix entry. Nothing may exceed it without review." }),
   RANGED_PHASE_WEIGHT: Object.freeze({ value: 0.35, provenance: 'assumed', ref: "spec/03 §5 orders the phases but does not weight the ranged exchange against the main engagement", note: "The pre-contact exchange lands 35% of a full engagement, so bringing artillery matters without letting a siege train win unaccompanied." }),
   WALL_GRADES_PER_SIEGE_SHARE: Object.freeze({ value: 6, provenance: 'assumed', ref: "spec/03 §5 says fortification damage is applied in the ranged phase without a rate", note: "A force that is entirely siege engines strips about six wall grades per assault, so walls are worn down over a campaign rather than in one battle." }),
-  AMBUSH_MAX_CHANCE: Object.freeze({ value: 0.35, provenance: 'assumed', ref: "spec/03 §5 phase 1 names ambush without probabilities", note: "Ceiling on defender ambush chance." }),
-  AMBUSH_PER_CONCEALMENT: Object.freeze({ value: 0.5, provenance: 'assumed', ref: "spec/03 §5 phase 1", note: "How much terrain concealment contributes to ambush chance." }),
-  AMBUSH_PER_SCOUTING: Object.freeze({ value: 0.4, provenance: 'assumed', ref: "spec/03 §5 phase 1", note: "How much attacker scouting suppresses it — the payoff for scouting first." }),
-  AMBUSH_PENALTY: Object.freeze({ value: 0.25, provenance: 'assumed', ref: "spec/03 §5 phase 1", note: "An ambushed attacker fights at 75%." }),
-  AMBUSH_BONUS: Object.freeze({ value: 0.15, provenance: 'assumed', ref: "spec/03 §5 phase 1", note: "An ambushing defender fights at 115%." }),
+  AMBUSH_MAX_CHANCE: Object.freeze({ value: 0.35, provenance: 'assumed', ref: "spec/03 §5 phase 1 names intel, concealment and ambush chance without probabilities", note: "Ceiling on the defender’s ambush chance. Capped so that scouting can always reduce the risk meaningfully and no terrain makes an attack a coin flip." }),
+  AMBUSH_PER_CONCEALMENT: Object.freeze({ value: 0.5, provenance: 'assumed', ref: "spec/03 §5 phase 1 names terrain concealment as an ambush input without a rate", note: "How much terrain concealment contributes to ambush chance. Fully concealed ground reaches the cap on its own, which is what makes terrain worth fighting for." }),
+  AMBUSH_PER_SCOUTING: Object.freeze({ value: 0.4, provenance: 'assumed', ref: "spec/03 §5 phase 1 names scouting quality as an ambush input without a rate", note: "How much attacker scouting suppresses ambush chance. Set below the concealment rate so scouting is the payoff for preparation without ever making terrain irrelevant." }),
+  AMBUSH_PENALTY: Object.freeze({ value: 0.25, provenance: 'assumed', ref: "spec/03 §5 phase 1 states that ambush happens, not what it costs", note: "An ambushed attacker fights at 75%. Large enough that failing to scout is a real mistake, small enough that it does not by itself decide a well-prepared assault." }),
+  AMBUSH_BONUS: Object.freeze({ value: 0.15, provenance: 'assumed', ref: "spec/03 §5 phase 1 states that ambush happens, not what it grants", note: "An ambushing defender fights at 115%. Deliberately smaller than the attacker’s penalty, so ambush is a disruption of the attack rather than a defensive multiplier to farm." }),
   PURSUIT_PER_LOG_RATIO: Object.freeze({ value: 0.25, provenance: 'assumed', ref: "spec/03 §5 phase 4 calls for casualty amplification on the losing side without a rate", note: "Scales pursuit losses by the log of the power ratio, so a narrow win is not a massacre and a rout is." }),
-  PURSUIT_MAX: Object.freeze({ value: 0.6, provenance: 'assumed', ref: "spec/03 §5 phase 4", note: "Ceiling on pursuit losses, so no single battle annihilates a force outright." }),
+  PURSUIT_MAX: Object.freeze({ value: 0.6, provenance: 'assumed', ref: "spec/03 §5 phase 4 requires casualty amplification on the losing side without a ceiling", note: "Ceiling on pursuit losses. No single battle annihilates a force outright, so a beaten player always has a core to withdraw and rebuild around." }),
   SCREEN_EXPOSURE: Object.freeze({ value: 1.6, provenance: 'assumed', ref: "spec/03 §7 requires screens to absorb disproportionately but gives no exposure figure", note: "Screens take 60% more than their contribution share. This is what they are for, and it is what absorption XP pays them for." }),
   MUNITIONS_PER_DAMAGE: Object.freeze({ value: 0.001, provenance: 'assumed', ref: "spec/03 §5 phase 6 requires Era IV+ munitions drain without a rate", note: "Munitions consumed per point of damage delivered, so industrial depth decides long wars." }),
   SHARD_BASE: Object.freeze({ value: 2, provenance: 'workbook', ref: "Chrono_Shards!R21C2", note: "ceiling = 2.0 + 0.30*constructionRank + 0.50*era" }),
@@ -125,8 +125,8 @@ export const CONSTANT_META: Readonly<Record<string, ConstantMeta>> = Object.free
   BASE_STORAGE: Object.freeze({ value: 10000, provenance: 'assumed', ref: "per-building storage values are an open content task (spec §10)", note: "Starting stockpile capacity before any Logistics building, sized so a new village overflows within about a day of neglect and the attention dashboard has something to say." }),
   STORAGE_PER_LOGISTICS: Object.freeze({ value: 5000, provenance: 'assumed', ref: "per-building storage values are an open content task (spec §10)", note: "Capacity added per Logistics building, scaled by the standard output curve." }),
   WORKERS_PER_LEVEL: Object.freeze({ value: 0.5, provenance: 'assumed', ref: "Building_Framework says buildings draw Workers from population without a rate", note: "Half a worker per level per plot, so understaffing is the normal state of a growing settlement." }),
-  UPKEEP_COIN_PER_LEVEL: Object.freeze({ value: 0.05, provenance: 'assumed', ref: "spec/04 §1 states Era II+ Coin upkeep without a rate", note: "Coin per level per plot from Era II." }),
-  UPKEEP_POWER_PER_LEVEL: Object.freeze({ value: 0.02, provenance: 'assumed', ref: "spec/04 §1 states Era IV+ Electricity draw without a rate", note: "Electricity per level per plot from Era IV." }),
+  UPKEEP_COIN_PER_LEVEL: Object.freeze({ value: 0.05, provenance: 'assumed', ref: "spec/04 §1 states Era II+ Coin upkeep without a rate", note: "Coin per level per plot from Era II. Sized so a settlement of ordinary buildings pays its own way and an over-built one does not, which is what makes Brownout a real pressure." }),
+  UPKEEP_POWER_PER_LEVEL: Object.freeze({ value: 0.02, provenance: 'assumed', ref: "spec/04 §1 states Era IV+ Electricity draw without a rate", note: "Electricity per level per plot from Era IV. Lower than the Coin rate because power is a second, narrower constraint layered on top rather than a replacement for it." }),
   ZOC_SPEED_MULT: Object.freeze({ value: 0.6, provenance: 'spec', ref: "spec/03 §4 · zone of control", note: "0.6x speed inside a hostile fortification radius." }),
   ATTRITION_PCT: Object.freeze({ value: 0.03, provenance: 'spec', ref: "spec/03 §4 · supply", note: "3% of strength per tick beyond supply range, escalating." }),
   ATTRITION_INTERVAL_MS: Object.freeze({ value: 3600000, provenance: 'spec', ref: "spec/03 §4", note: "One attrition tick per hour out of supply." }),
@@ -232,19 +232,19 @@ export const C = Object.freeze({
   RANGED_PHASE_WEIGHT: 0.35,
   /** A force that is entirely siege engines strips about six wall grades per assault, so walls are worn down over a campaign rather than in one battle. — [ASSUMED] spec/03 §5 says fortification damage is applied in the ranged phase without a rate */
   WALL_GRADES_PER_SIEGE_SHARE: 6,
-  /** Ceiling on defender ambush chance. — [ASSUMED] spec/03 §5 phase 1 names ambush without probabilities */
+  /** Ceiling on the defender’s ambush chance. Capped so that scouting can always reduce the risk meaningfully and no terrain makes an attack a coin flip. — [ASSUMED] spec/03 §5 phase 1 names intel, concealment and ambush chance without probabilities */
   AMBUSH_MAX_CHANCE: 0.35,
-  /** How much terrain concealment contributes to ambush chance. — [ASSUMED] spec/03 §5 phase 1 */
+  /** How much terrain concealment contributes to ambush chance. Fully concealed ground reaches the cap on its own, which is what makes terrain worth fighting for. — [ASSUMED] spec/03 §5 phase 1 names terrain concealment as an ambush input without a rate */
   AMBUSH_PER_CONCEALMENT: 0.5,
-  /** How much attacker scouting suppresses it — the payoff for scouting first. — [ASSUMED] spec/03 §5 phase 1 */
+  /** How much attacker scouting suppresses ambush chance. Set below the concealment rate so scouting is the payoff for preparation without ever making terrain irrelevant. — [ASSUMED] spec/03 §5 phase 1 names scouting quality as an ambush input without a rate */
   AMBUSH_PER_SCOUTING: 0.4,
-  /** An ambushed attacker fights at 75%. — [ASSUMED] spec/03 §5 phase 1 */
+  /** An ambushed attacker fights at 75%. Large enough that failing to scout is a real mistake, small enough that it does not by itself decide a well-prepared assault. — [ASSUMED] spec/03 §5 phase 1 states that ambush happens, not what it costs */
   AMBUSH_PENALTY: 0.25,
-  /** An ambushing defender fights at 115%. — [ASSUMED] spec/03 §5 phase 1 */
+  /** An ambushing defender fights at 115%. Deliberately smaller than the attacker’s penalty, so ambush is a disruption of the attack rather than a defensive multiplier to farm. — [ASSUMED] spec/03 §5 phase 1 states that ambush happens, not what it grants */
   AMBUSH_BONUS: 0.15,
   /** Scales pursuit losses by the log of the power ratio, so a narrow win is not a massacre and a rout is. — [ASSUMED] spec/03 §5 phase 4 calls for casualty amplification on the losing side without a rate */
   PURSUIT_PER_LOG_RATIO: 0.25,
-  /** Ceiling on pursuit losses, so no single battle annihilates a force outright. — [ASSUMED] spec/03 §5 phase 4 */
+  /** Ceiling on pursuit losses. No single battle annihilates a force outright, so a beaten player always has a core to withdraw and rebuild around. — [ASSUMED] spec/03 §5 phase 4 requires casualty amplification on the losing side without a ceiling */
   PURSUIT_MAX: 0.6,
   /** Screens take 60% more than their contribution share. This is what they are for, and it is what absorption XP pays them for. — [ASSUMED] spec/03 §7 requires screens to absorb disproportionately but gives no exposure figure */
   SCREEN_EXPOSURE: 1.6,
@@ -340,9 +340,9 @@ export const C = Object.freeze({
   STORAGE_PER_LOGISTICS: 5000,
   /** Half a worker per level per plot, so understaffing is the normal state of a growing settlement. — [ASSUMED] Building_Framework says buildings draw Workers from population without a rate */
   WORKERS_PER_LEVEL: 0.5,
-  /** Coin per level per plot from Era II. — [ASSUMED] spec/04 §1 states Era II+ Coin upkeep without a rate */
+  /** Coin per level per plot from Era II. Sized so a settlement of ordinary buildings pays its own way and an over-built one does not, which is what makes Brownout a real pressure. — [ASSUMED] spec/04 §1 states Era II+ Coin upkeep without a rate */
   UPKEEP_COIN_PER_LEVEL: 0.05,
-  /** Electricity per level per plot from Era IV. — [ASSUMED] spec/04 §1 states Era IV+ Electricity draw without a rate */
+  /** Electricity per level per plot from Era IV. Lower than the Coin rate because power is a second, narrower constraint layered on top rather than a replacement for it. — [ASSUMED] spec/04 §1 states Era IV+ Electricity draw without a rate */
   UPKEEP_POWER_PER_LEVEL: 0.02,
   /** 0.6x speed inside a hostile fortification radius. — spec/03 §4 · zone of control */
   ZOC_SPEED_MULT: 0.6,
