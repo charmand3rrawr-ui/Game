@@ -2,10 +2,12 @@
   "name": "ascendance",
   "private": true,
   "version": "0.1.0",
-  "description": "Ascendance — a persistent massively-multiplayer strategy game. Server-authoritative, deterministic, event-driven.",
+  "description": "Ascendance \u2014 a persistent massively-multiplayer strategy game. Server-authoritative, deterministic, event-driven.",
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "import": "pnpm --filter @ascendance/tools run import",
@@ -14,7 +16,9 @@
     "test": "pnpm -r run test",
     "dev:server": "pnpm --filter @ascendance/server run dev",
     "dev:client": "pnpm --filter @ascendance/client run dev",
-    "build:pages": "pnpm run import && pnpm --filter @ascendance/shared run build && pnpm --filter @ascendance/engine run build && pnpm --filter @ascendance/client run build"
+    "build:pages": "pnpm run import && pnpm --filter @ascendance/shared run build && pnpm --filter @ascendance/engine run build && pnpm --filter @ascendance/client run build",
+    "smoke": "pnpm --filter @ascendance/client run smoke",
+    "ci": "pnpm run import && pnpm run build && pnpm run typecheck && pnpm run test"
   },
   "devDependencies": {
     "typescript": "^5.7.3",

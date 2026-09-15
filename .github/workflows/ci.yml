@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Import, typecheck, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The balance import runs FIRST and is allowed to fail the build.
+      #
+      # spec/07 §1: the importer must fail on a missing sheet, a renamed
+      # column, a value outside its declared range, or a violated calibration
+      # anchor. If any of the six anchors from spec/07 §3 has moved, nothing
+      # else in this job is worth running.
+      - name: Import the balance workbook
+        run: pnpm run import
+
+      # Generated files are committed so the repo builds and tests without a
+      # spreadsheet parser in the loop. This check is what keeps that copy
+      # honest: if the workbook changed and nobody regenerated, say so here
+      # rather than shipping code that disagrees with the source of truth.
+      - name: Check the generated balance data is up to date
+        run: |
+          if ! git diff --quiet -- packages/shared/src/generated packages/server/migrations/0002_seed_ref.sql docs/ASSUMPTIONS.md; then
+            echo "::error::The workbook and the committed generated files disagree. Run 'pnpm run import' and commit the result."
+            git diff --stat -- packages/shared/src/generated packages/server/migrations/0002_seed_ref.sql docs/ASSUMPTIONS.md
+            git diff -- packages/shared/src/generated/constants.ts | head -80
+            exit 1
+          fi
+
+      - name: Build packages
+        run: |
+          pnpm --filter @ascendance/shared run build
+          pnpm --filter @ascendance/engine run build
+          pnpm --filter @ascendance/server run build
+
+      - name: Typecheck
+        run: pnpm -r run typecheck
+
+      # The milestone acceptance tests from spec/08. Among them: the roster
+      # generates to 2,268 units matching Units_Master, the XP worked example
+      # yields exactly 211 XP, the +40% joint cap never breaches, and a world
+      # replays identically from an identical script and seed.
+      - name: Test
+        run: pnpm -r run test
+
+      - name: Build the client
+        run: pnpm --filter @ascendance/client run build
+
+  smoke:
+    name: Play the game in a browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run import
+      - run: pnpm --filter @ascendance/shared run build
+      - run: pnpm --filter @ascendance/engine run build
+
+      - name: Install Chromium
+        run: pnpm --filter @ascendance/client exec playwright install --with-deps chromium
+
+      # A green unit-test suite and a page that throws on load are not the same
+      # thing. This walks every screen and completes the M7 loop — queue a
+      # building, dispatch a force, read the result — in a real browser.
+      - name: Build the client in sandbox mode
+        run: pnpm --filter @ascendance/client run build
+        env:
+          ASCENDANCE_LOCAL: '1'
+
+      - name: Smoke-test the client
+        run: pnpm --filter @ascendance/client run smoke
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-screenshots
+          path: packages/client/smoke-output/
+          retention-days: 7
+          if-no-files-found: ignore

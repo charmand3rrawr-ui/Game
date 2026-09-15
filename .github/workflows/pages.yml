@@ -1,0 +1,82 @@
+name: Deploy to GitHub Pages
+
+# Publishes the playable sandbox build.
+#
+# GitHub Pages serves static files, so the deployed page has no gateway to talk
+# to. Rather than a cut-down demo, it hosts an authoritative world in the
+# browser using the SAME @ascendance/engine the server runs — possible because
+# the simulation core is pure, has no I/O, and never reads a clock
+# (DECISIONS.md D4). It is single-player, and the page says so.
+#
+# The balance import runs here too. A page that disagrees with the workbook is
+# not worth deploying, so a violated calibration anchor fails this workflow
+# exactly as it fails CI.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never cancel a deployment in progress; queue behind it instead.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Import the balance workbook
+        run: pnpm run import
+
+      - name: Build packages
+        run: |
+          pnpm --filter @ascendance/shared run build
+          pnpm --filter @ascendance/engine run build
+
+      - name: Build the sandbox client
+        run: pnpm --filter @ascendance/client run build
+        env:
+          ASCENDANCE_LOCAL: '1'
+          # Pages serves from /<repository>/, so assets need that prefix.
+          ASCENDANCE_BASE: /${{ github.event.repository.name }}/
+
+      # Pages has no SPA rewrite rule. A copy of index.html at 404.html means a
+      # deep link or a refresh lands on the app rather than on a 404 page.
+      - name: Add the SPA fallback
+        run: cp packages/client/dist/index.html packages/client/dist/404.html
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: packages/client/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

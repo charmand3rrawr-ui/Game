@@ -1178,7 +1178,7 @@ function assertRosterMatchesMaster(
   if (checked !== 2268) throw new ImportError(`M3 acceptance: verified ${checked} units, expected 2268`);
 }
 
-function cmp(key: string, path: string, grade: string, field: string, generated: number, declared: Cell): void {
+function cmp(key: string, path: string, grade: string, field: string, generated: number, declared: Cell | undefined): void {
   if (typeof declared !== 'number') {
     throw new ImportError(`Units_Master ${key}/${path}/${grade}: ${field} is ${JSON.stringify(declared)}, expected a number`);
   }
@@ -1462,7 +1462,7 @@ function slug(s: string): string {
     .replace(/^_+|_+$/g, '');
 }
 
-function numOrDie(v: Cell, what: string): number {
+function numOrDie(v: Cell | undefined, what: string): number {
   if (typeof v !== 'number' || !Number.isFinite(v)) {
     throw new ImportError(`${what} is ${JSON.stringify(v)}; expected a finite number`);
   }

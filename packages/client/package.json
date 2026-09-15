@@ -8,7 +8,9 @@
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "echo \"(client: no unit tests yet — game logic lives in shared/engine and is tested there)\""
+    "test": "echo \"(client: no unit tests yet \u2014 game logic lives in shared/engine and is tested there)\"",
+    "smoke": "node smoke.mjs",
+    "smoke:build": "ASCENDANCE_LOCAL=1 vite build && node smoke.mjs"
   },
   "dependencies": {
     "@ascendance/shared": "workspace:*",
@@ -22,6 +24,7 @@
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.7.3",
-    "vite": "^6.0.11"
+    "vite": "^6.0.11",
+    "playwright": "^1.50.1"
   }
 }
