@@ -16,6 +16,7 @@
 import {
   C,
   BALANCE_REVISION,
+  GRADES,
   HOLDINGS,
   adminUpkeep,
   applyShards,
@@ -43,7 +44,10 @@ import {
   type Settlement,
   type SlotKind,
   type Stockpile,
+  type Tribulation,
   type Uuid,
+  qiBreakthroughCost,
+  prng as prngFor,
 } from '@ascendance/shared';
 import { MemoryStore } from './store/memory.js';
 import type { Store, Tx } from './store/types.js';
@@ -75,6 +79,10 @@ import {
   disciplinesForEra, knowledgeFactorFor, levelOf, researchCost, researchEffects, researchRef,
   techTier, validateResearchEnqueue, type ResearchLevels,
 } from './sim/research.js';
+import {
+  accrueQi, cultivationAura, gradeRef, qiPerHour, realmName, resolveTribulation,
+  tribulationOdds, validateBreakthrough, type QiSources, type TribulationOdds,
+} from './sim/cultivation.js';
 
 export class CommandError extends Error {
   constructor(
@@ -188,8 +196,22 @@ export class World {
     };
   }
 
+  /**
+   * A player, with lazily-accrued values brought up to date.
+   *
+   * Qi is banked on the row but accrues continuously, so reading the raw row
+   * would show a number that disagrees with the cultivation screen. One stale
+   * number in a header is worse than no number at all.
+   */
   player(id: Uuid): Player {
-    return this.store.read((tx) => tx.players.require(id));
+    return this.store.read((tx) => {
+      const p = tx.players.require(id);
+      const income = qiPerHour(tx.settlements.where((s) => s.ownerId === id).map((s) => this.viewIn(tx, s.id)));
+      return {
+        ...p,
+        qi: accrueQi(p.qi, income.perHour, p.temporalDebt, p.lastQiAccruedAt ?? p.createdAt, this.clock),
+      };
+    });
   }
 
   settlementsOf(playerId: Uuid): Settlement[] {
@@ -1001,6 +1023,144 @@ export class World {
     });
   }
 
+  /**
+   * Declare a breakthrough.
+   *
+   * Qi is spent NOW and a tribulation opens. This is not a purchase: several
+   * trials are publicly visible and can be crashed by rivals, so the moment
+   * between declaring and resolving is real, exposed time (spec/04 §10).
+   *
+   * Chrono Shards cannot touch any of it — cultivation breakthroughs are on
+   * the prohibition list, and the Temporal Debt from having spent shards
+   * elsewhere makes this harder. This is where buying time is paid for.
+   */
+  beginBreakthrough(commandId: Uuid, playerId: Uuid, settlementId: Uuid): Tribulation {
+    return this.idempotent(commandId, (tx) => {
+      const player = tx.players.require(playerId);
+      const settlement = tx.settlements.require(settlementId);
+      if (settlement.ownerId !== playerId) throw new CommandError('not-owner', 'you do not own this settlement');
+
+      const income = qiPerHour(tx.settlements.where((x) => x.ownerId === playerId).map((x) => this.viewIn(tx, x.id)));
+      const qi = accrueQi(player.qi, income.perHour, player.temporalDebt, player.lastQiAccruedAt ?? player.createdAt, this.clock);
+
+      const check = validateBreakthrough({
+        grade: player.cultivationGrade,
+        qi,
+        temporalDebt: player.temporalDebt,
+        reputation: player.reputation,
+        stunnedUntil: player.cultivationStunnedUntil,
+        now: this.clock,
+        tribulationOpen: tx.tribulations.find((t) => t.playerId === playerId) !== undefined,
+      });
+      if (!check.ok) throw new CommandError(check.type, check.detail, check.meta);
+
+      const next = player.cultivationGrade + 1;
+      const cost = qiBreakthroughCost(next);
+      const trial = gradeRef(player.cultivationGrade).trial;
+
+      tx.players.put({ ...player, qi: qi - cost, lastQiAccruedAt: this.clock });
+
+      const tribulation: Tribulation = {
+        id: this.ids.next('tb', this.clock),
+        playerId,
+        worldId: this.worldId,
+        shardId: settlement.shardId,
+        grade: player.cultivationGrade,
+        trialName: trial.name,
+        visible: trial.visible,
+        crashable: trial.crashable,
+        qiSpent: cost,
+        settlementId,
+        openedAt: this.clock,
+        resolvesAt: this.clock + BigInt(C.TRIBULATION_WINDOW_MS),
+        interferers: [],
+      };
+      tx.tribulations.put(tribulation);
+
+      this.scheduler.schedule(tx, {
+        shardId: settlement.shardId,
+        executeAt: tribulation.resolvesAt,
+        kind: 'TRIBULATION_WINDOW',
+        payload: { tribulationId: tribulation.id },
+      });
+
+      tx.appendEvent({
+        id: this.ids.next('log', this.clock),
+        worldId: this.worldId,
+        shardId: settlement.shardId,
+        occurredAt: this.clock,
+        kind: 'tribulation.opened',
+        actorId: playerId,
+        subjectId: settlementId,
+        payload: {
+          grade: next, trial: trial.name, visible: trial.visible, crashable: trial.crashable,
+          qiSpent: cost.toString(), resolvesAt: tribulation.resolvesAt.toString(),
+        },
+      });
+
+      // A visible tribulation is announced to the world. That is the point of
+      // it being visible: rivals are meant to know, and are meant to come.
+      if (trial.visible) {
+        this.emit('tribulation.opened', `map:${settlement.shardId}`, {
+          tribulationId: tribulation.id,
+          playerId,
+          playerName: player.name,
+          settlementId,
+          trial: trial.name,
+          crashable: trial.crashable,
+          resolvesAt: tribulation.resolvesAt.toString(),
+        });
+      }
+
+      return tribulation;
+    });
+  }
+
+  /**
+   * Crash someone else's tribulation.
+   *
+   * Only a trial the workbook marks crashable, only while it is open, and only
+   * once per rival. Each interferer lowers the odds but none of them can make
+   * it impossible — a breakthrough can always be earned through a crowd.
+   */
+  interfere(commandId: Uuid, playerId: Uuid, tribulationId: Uuid): Tribulation {
+    return this.idempotent(commandId, (tx) => {
+      const t = tx.tribulations.get(tribulationId);
+      if (!t) throw new CommandError('not-found', 'no such tribulation');
+      if (t.playerId === playerId) throw new CommandError('validation', 'you cannot crash your own tribulation');
+      if (!t.visible) throw new CommandError('validation', 'that tribulation is not visible to you');
+      if (!t.crashable) {
+        throw new CommandError('validation', `a ${t.trialName} cannot be interfered with`, { trial: t.trialName });
+      }
+      if (t.resolvesAt <= this.clock) throw new CommandError('already-complete', 'that tribulation has resolved');
+      if (t.interferers.includes(playerId)) {
+        throw new CommandError('validation', 'you are already interfering with it');
+      }
+
+      const updated: Tribulation = { ...t, interferers: [...t.interferers, playerId] };
+      tx.tribulations.put(updated);
+
+      tx.appendEvent({
+        id: this.ids.next('log', this.clock),
+        worldId: this.worldId,
+        shardId: t.shardId,
+        occurredAt: this.clock,
+        kind: 'tribulation.crashed',
+        actorId: playerId,
+        subjectId: t.playerId,
+        payload: { tribulationId, trial: t.trialName, interferers: updated.interferers.length },
+      });
+
+      // The victim is told. Being crashed in silence would be indistinguishable
+      // from bad luck, and the whole mechanic depends on knowing who did it.
+      this.emit('tribulation.crashed', `player:${t.playerId}`, {
+        tribulationId, by: playerId, interferers: updated.interferers.length,
+      });
+
+      return updated;
+    });
+  }
+
   /** Reinforce a formation, diluting its veterancy by headcount. */
   reinforceFormation(commandId: Uuid, playerId: Uuid, formationId: Uuid, addedCount: number): Formation {
     return this.idempotent(commandId, (tx) => {
@@ -1056,7 +1216,8 @@ export class World {
       .on('TRAINING_COMPLETE', (tx, e, now) => this.onTrainingComplete(tx, e, now))
       .on('RESEARCH_COMPLETE', (tx, e, now) => this.onResearchComplete(tx, e, now))
       .on('MOVEMENT_ARRIVE', (tx, e, now) => this.onMovementArrive(tx, e, now))
-      .on('HEAVENS_ENVY_RESOLVE', (tx, e, now) => this.onEnvyResolve(tx, e, now));
+      .on('HEAVENS_ENVY_RESOLVE', (tx, e, now) => this.onEnvyResolve(tx, e, now))
+      .on('TRIBULATION_WINDOW', (tx, e, now) => this.onTribulation(tx, e, now));
   }
 
   private onBuildComplete(tx: Tx, e: ScheduledEvent, now: Millis): void {
@@ -1264,12 +1425,17 @@ export class World {
         this.empireWeightIn(tx, m.ownerId),
         // Research folds into the joint +40% cap with everything else. It does
         // not get to sit outside it just because it took a long time.
-        attackerPlayer ? techTier(this.researchLevels(tx, m.ownerId), attackerPlayer.era) : 1,
+        // Research and cultivation both fold into the joint +40% cap.
+        attackerPlayer
+          ? techTier(this.researchLevels(tx, m.ownerId), attackerPlayer.era) * cultivationAura(attackerPlayer.cultivationGrade)
+          : 1,
       ),
       defender: sideInput(
         defenderPlayer?.name ?? 'Neutral', defenderPlayer, defenderUnits,
         target.ownerId ? this.empireWeightIn(tx, target.ownerId) : 0,
-        defenderPlayer && target.ownerId ? techTier(this.researchLevels(tx, target.ownerId), defenderPlayer.era) : 1,
+        defenderPlayer && target.ownerId
+          ? techTier(this.researchLevels(tx, target.ownerId), defenderPlayer.era) * cultivationAura(defenderPlayer.cultivationGrade)
+          : 1,
       ),
       fortification: { wallGrade, flatGarrisonHp: wallGrade * C.GARRISON_HP_PER_WALL_GRADE, concealment: target.terrain.hazards.length * 0.1 },
       plunderable: Object.fromEntries(view.stockpiles.map((s) => [s.resourceKey, s.amount])),
@@ -1383,6 +1549,77 @@ export class World {
   }
 
   /**
+   * A tribulation resolves.
+   *
+   * Randomness comes from the seeded generator keyed on this event, so the
+   * outcome is replayable like everything else (spec/03 §2) — a player who
+   * loses a breakthrough to a crowd of rivals can have it re-run and see that
+   * it was not arbitrary.
+   */
+  private onTribulation(tx: Tx, e: ScheduledEvent, now: Millis): void {
+    const { tribulationId } = e.payload as { tribulationId: string };
+    const t = tx.tribulations.get(tribulationId);
+    if (!t) return;
+    tx.tribulations.delete(tribulationId);
+
+    const player = tx.players.get(t.playerId);
+    if (!player) return;
+
+    const result = resolveTribulation({
+      grade: t.grade,
+      qiSpent: t.qiSpent,
+      temporalDebt: player.temporalDebt,
+      reputation: player.reputation,
+      interferers: t.interferers.length,
+      now,
+      rng: prngFor(this.worldId, e.id),
+    });
+
+    tx.players.put({
+      ...player,
+      cultivationGrade: result.newGrade,
+      qi: player.qi + result.qiRefunded,
+      cultivationStunnedUntil: result.stunnedUntil,
+    });
+
+    tx.appendEvent({
+      id: this.ids.next('log', now),
+      worldId: this.worldId,
+      shardId: t.shardId,
+      occurredAt: now,
+      kind: result.passed ? 'tribulation.passed' : 'tribulation.failed',
+      actorId: t.playerId,
+      subjectId: t.settlementId,
+      payload: {
+        trial: t.trialName,
+        grade: result.newGrade,
+        realm: realmName(result.newGrade),
+        roll: result.roll,
+        chance: result.odds.chance,
+        interferers: t.interferers.length,
+        narrative: result.narrative,
+      },
+    });
+
+    this.emit('tribulation.resolved', `player:${t.playerId}`, {
+      tribulationId, passed: result.passed, grade: result.newGrade,
+      realm: realmName(result.newGrade), narrative: result.narrative,
+      chance: result.odds.chance, roll: result.roll,
+    });
+    // Everyone who came to crash it deserves to learn whether it worked.
+    for (const rival of t.interferers) {
+      this.emit('tribulation.resolved', `player:${rival}`, {
+        tribulationId, passed: result.passed, narrative: result.narrative,
+      });
+    }
+    if (t.visible) {
+      this.emit('tribulation.resolved', `map:${t.shardId}`, {
+        tribulationId, playerId: t.playerId, passed: result.passed, narrative: result.narrative,
+      });
+    }
+  }
+
+  /**
    * The daily Heaven's Envy resolution.
    *
    * Three leaderboards rank shard-hours PURCHASED in a rolling 24h window,
@@ -1482,6 +1719,60 @@ export class World {
 
   private empireWeightIn(tx: Tx, playerId: Uuid): number {
     return adminUpkeep(tx.settlements.where((s) => s.ownerId === playerId).map((s) => holdingRef(s.holdingType).adminCost));
+  }
+
+  /**
+   * The player's cultivation standing, with Qi brought up to date.
+   *
+   * Qi accrues lazily like everything else — nothing ticks, and a player away
+   * for a month costs nothing while they are gone.
+   */
+  cultivation(playerId: Uuid): {
+    grade: number; realm: string; qi: bigint; income: QiSources;
+    nextCost: bigint; canAfford: boolean; stunnedUntil?: Millis;
+    tribulation?: Tribulation; odds: TribulationOdds;
+    aura: number; ladder: { grade: number; realm: string; qiCost: string; trial: string; visible: boolean; crashable: boolean }[];
+  } {
+    return this.store.read((tx) => {
+      const player = tx.players.require(playerId);
+      const income = qiPerHour(tx.settlements.where((x) => x.ownerId === playerId).map((x) => this.viewIn(tx, x.id)));
+      const qi = accrueQi(player.qi, income.perHour, player.temporalDebt, player.lastQiAccruedAt ?? player.createdAt, this.clock);
+      const next = Math.min(C.MAX_GRADE, player.cultivationGrade + 1);
+      return {
+        grade: player.cultivationGrade,
+        realm: realmName(player.cultivationGrade),
+        qi,
+        income,
+        nextCost: qiBreakthroughCost(next),
+        canAfford: qi >= qiBreakthroughCost(next),
+        stunnedUntil: player.cultivationStunnedUntil,
+        tribulation: tx.tribulations.find((t) => t.playerId === playerId),
+        odds: tribulationOdds({
+          grade: player.cultivationGrade,
+          temporalDebt: player.temporalDebt,
+          reputation: player.reputation,
+          interferers: 0,
+        }),
+        aura: cultivationAura(player.cultivationGrade),
+        ladder: GRADES.map((g) => ({
+          grade: g.grade, realm: g.realmStage, qiCost: g.qiCost,
+          trial: g.tribulation, visible: g.trial.visible, crashable: g.trial.crashable,
+        })),
+      };
+    });
+  }
+
+  /**
+   * Tribulations a player can SEE — and therefore interfere with.
+   *
+   * Only the visible ones, and never their own. This is the public half of
+   * spec/04 §10: a breakthrough at the Golden Core is an event in the world,
+   * not a private timer.
+   */
+  visibleTribulations(playerId: Uuid): Tribulation[] {
+    return this.store.read((tx) =>
+      tx.tribulations.where((t) => t.visible && t.playerId !== playerId && t.resolvesAt > this.clock),
+    );
   }
 
   /** A player's research levels, as the flat map the sim modules want. */

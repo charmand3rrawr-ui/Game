@@ -38,23 +38,36 @@ export interface SeededWorld {
   homeId: Uuid;
 }
 
-/** Era I starting kit: enough to do something, not enough to be comfortable. */
+/**
+ * The Era I starting kit.
+ *
+ * It has to fit inside a Village's plots with room left to build, and plot
+ * scarcity is a hard constraint rather than a guideline (spec/04 §1) — so this
+ * list is already a set of choices, exactly as the player's will be. A
+ * Chieftain's Hall alone takes four of twenty-six.
+ *
+ * One building per thing a new player needs to be able to DO:
+ *   - three extractors and a warehouse, so there is something to spend;
+ *   - a Barracks and an Archery Range, so the starting formations can be
+ *     reinforced and the training loop is reachable on day one;
+ *   - a Palisade, so an attack on you is survivable;
+ *   - an Elder's Lodge, because research cannot start without a Knowledge
+ *     building anywhere;
+ *   - a Meditation Ledge, because cultivation income has to come from
+ *     somewhere before a player knows to build for it.
+ */
 const STARTING_BUILDINGS: { key: string; level: number }[] = [
-  { key: '1_chieftain_s_hall', level: 12 },
-  { key: '1_farm', level: 8 },
-  { key: '1_lumber_camp', level: 8 },
-  { key: '1_mine', level: 7 },
-  { key: '1_clay_pit', level: 5 },
-  { key: '1_warehouse', level: 9 },
-  { key: '1_grain_pit', level: 6 },
-  { key: '1_barracks', level: 5 },
-  { key: '1_archery_range', level: 4 },
-  { key: '1_palisade', level: 4 },
-  // Research is player-level but has to be hosted somewhere: without a
-  // Knowledge building a settlement cannot start any of it (spec/04 §3).
-  { key: '1_elder_s_lodge', level: 5 },
-  { key: '1_scout_post', level: 3 },
-];
+  { key: '1_chieftain_s_hall', level: 12 },  // 4 plots
+  { key: '1_farm', level: 8 },               // 1
+  { key: '1_lumber_camp', level: 8 },        // 1
+  { key: '1_mine', level: 7 },               // 1
+  { key: '1_warehouse', level: 9 },          // 2
+  { key: '1_barracks', level: 5 },           // 3
+  { key: '1_archery_range', level: 4 },      // 3
+  { key: '1_palisade', level: 4 },           // 3
+  { key: '1_elder_s_lodge', level: 5 },      // 2
+  { key: '1_meditation_ledge', level: 4 },   // 2
+];                                           // 22 of 26, leaving room to choose
 
 const STARTING_RESOURCES: Record<string, bigint> = {
   timber: 250_000n,
@@ -186,7 +199,9 @@ function placeSettlement(
       richness: { timber: 1.2, ore: 1, grain: 1.1, clay: 1, stone: 1, special: 1 },
       hazards: [],
       biome: 'temperate',
-      spiritVeins: 0,
+      // Spirit Vein tiles pay far more Qi than buildings do, which is what
+      // makes them worth fighting over rather than merely nice to have.
+      spiritVeins: args.ownerId ? 1 : 0,
     },
     plotsTotal: 24,
     population: 400,

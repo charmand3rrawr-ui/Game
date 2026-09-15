@@ -241,6 +241,26 @@ export const localApi: Api = {
     });
   },
 
+  cultivation() {
+    const { world, playerId } = ensureWorld();
+    return wrap(() => wire({
+      ...world.cultivation(playerId),
+      visibleNearby: world.visibleTribulations(playerId),
+    }) as import('./api.js').CultivationDto);
+  },
+
+  breakthrough(settlementId) {
+    const { world, playerId } = ensureWorld();
+    tick();
+    return wrap(() => wire(world.beginBreakthrough(crypto.randomUUID(), playerId, settlementId)) as import('./api.js').TribulationDto);
+  },
+
+  interfere(tribulationId) {
+    const { world, playerId } = ensureWorld();
+    tick();
+    return wrap(() => wire(world.interfere(crypto.randomUUID(), playerId, tribulationId)) as import('./api.js').TribulationDto);
+  },
+
   battles(settlementId: string) {
     const { world } = ensureWorld();
     return wrap(() => wire({ battles: world.battlesAt(settlementId).slice(0, 25) }) as { battles: import('@ascendance/shared').Battle[] });

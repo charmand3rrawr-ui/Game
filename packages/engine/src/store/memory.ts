@@ -13,7 +13,7 @@
 import type {
   Alliance, AllianceMember, Battle, Building, Dynasty, Formation, Governor,
   LoggedEvent, Movement, Player, Proficiency, QueueItem, ResearchLevel, ScheduledEvent,
-  Settlement, Stockpile, Treaty, Uuid, Millis,
+  Settlement, Stockpile, Treaty, Tribulation, Uuid, Millis,
 } from '@ascendance/shared';
 import type { Store, Tx, Repo, KeyedRepo } from './types.js';
 
@@ -66,6 +66,7 @@ interface Tables {
   allianceMembers: Map<string, AllianceMember>;
   treaties: Map<string, Treaty>;
   governors: Map<string, Governor>;
+  tribulations: Map<string, Tribulation>;
   scheduled: Map<string, ScheduledEvent>;
   commands: Map<string, unknown>;
 }
@@ -76,7 +77,7 @@ function emptyTables(): Tables {
     settlements: new Map(), buildings: new Map(), stockpiles: new Map(),
     queue: new Map(), formations: new Map(), movements: new Map(),
     battles: new Map(), alliances: new Map(), allianceMembers: new Map(),
-    treaties: new Map(), governors: new Map(), scheduled: new Map(),
+    treaties: new Map(), governors: new Map(), tribulations: new Map(), scheduled: new Map(),
     commands: new Map(),
   };
 }
@@ -119,7 +120,7 @@ export class MemoryStore implements Store {
       queue: new Map(t.queue), formations: new Map(t.formations),
       movements: new Map(t.movements), battles: new Map(t.battles),
       alliances: new Map(t.alliances), allianceMembers: new Map(t.allianceMembers),
-      treaties: new Map(t.treaties), governors: new Map(t.governors),
+      treaties: new Map(t.treaties), governors: new Map(t.governors), tribulations: new Map(t.tribulations),
       scheduled: new Map(t.scheduled), commands: new Map(t.commands),
     };
   }
@@ -143,6 +144,7 @@ export class MemoryStore implements Store {
       allianceMembers: new CompositeRepo(t.allianceMembers, (m) => [m.allianceId, m.playerId]),
       treaties: new MapRepo(t.treaties, 'treaty'),
       governors: new MapRepo(t.governors, 'governor'),
+      tribulations: new MapRepo(t.tribulations, 'tribulation'),
       scheduled: new MapRepo(t.scheduled, 'scheduled event'),
 
       appendEvent(e: LoggedEvent): void { log.push(e); },

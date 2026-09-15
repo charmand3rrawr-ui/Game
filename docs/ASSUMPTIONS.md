@@ -12,7 +12,7 @@ balance owner to confirm or correct.
 Correcting one means adding the real value to the appropriate workbook sheet and
 changing its reader in the importer from `C.assumed(...)` to `C.fromWorkbook(...)`.
 
-## 38 open assumptions
+## 48 open assumptions
 
 | Constant | Assumed value | Why it is not in the workbook | Reasoning for the value |
 |---|---|---|---|
@@ -39,6 +39,16 @@ changing its reader in the importer from `C.assumed(...)` to `C.fromWorkbook(...
 | `MILITARY_QUEUE_SLOTS` | 2 | Category_Chassis!Military says military buildings grant unit queue slots without a number | Training slots a settlement gets from its military buildings, separate from build slots so a settlement is not forced to choose between growing and defending itself. |
 | `TRAIN_BATCH_MAX` | 5000 | no published batch limit on a training order | Largest single training order, so one command cannot queue a year of production and make the attention dashboard useless. |
 | `TRAIN_SPEED_PER_GRADE` | 0.03 | Category_Chassis!Military says military buildings reduce train time, capped at -40%, without a rate | Training time saved per grade of the best military building, so raising a Barracks is worth doing without letting one settlement out-produce a continent. |
+| `TRIBULATION_WINDOW_MS` | 14400000 | Cultivation!Breakthroughs calls tribulations "live events" without a duration | How long a tribulation stands open between being declared and resolving. Long enough that a rival who sees a visible one has time to travel and interfere, which is the whole point of making them public. |
+| `TRIBULATION_BASE_SUCCESS` | 0.85 | Grades_Realms describes each trial but gives no pass rate | Base chance of passing a tribulation before karma and interference. High, because the Qi cost is already the real gate and losing a breakthrough to a coin flip would be miserable. |
+| `TRIBULATION_PER_DEBT_TIER` | 0.06 | spec/04 §11 guardrail 3 says Temporal Debt raises tribulation difficulty without a rate | Pass chance lost per tier of Temporal Debt. This is where buying time is actually paid for: the cultivation game is the one thing money cannot accelerate. |
+| `TRIBULATION_PER_REPUTATION` | 0.0015 | Cultivation!Karma says karmic weight modifies tribulation difficulty without a rate | Pass chance gained per point of reputation on a karma-weighted trial, and lost per point of infamy. Betrayal stays allowed and stays priced. |
+| `TRIBULATION_CRASH_PENALTY` | 0.12 | Grades_Realms marks a trial "crashable" without saying what crashing it does | Pass chance lost per rival who interferes with a visible tribulation. Enough that crashing one is worth the trip, not so much that one rival decides it. |
+| `TRIBULATION_FAILURE_QI_KEPT` | 0.4 | Grades_Realms does not say what a failed breakthrough costs beyond the stun it names | Fraction of the spent Qi returned on failure. A failed breakthrough hurts without erasing months of accumulation. |
+| `QI_PER_CULTIVATION_BUILDING` | 4 | Cultivation!Qi names the sources (Spirit Groves, Qi Gathering Stones, Spirit Wells) without rates | Qi per hour per level-scaled cultivation building, summed across every holding — cultivation is player-level progression, so its income is too. |
+| `QI_PER_SPIRIT_VEIN` | 12 | Cultivation!Qi names Spirit Vein tiles as a source without a rate | Qi per hour per Spirit Vein tile, which is what makes those tiles worth fighting over. |
+| `QI_IDLE_PER_HOUR` | 2 | Cultivation!Qi lists idle meditation as a source without a rate | Qi per hour from meditation alone, so a player with no cultivation buildings still advances, slowly, and the realm ladder is never completely shut to them. |
+| `CULTIVATION_AURA_PER_GRADE` | 0.004 | Cultivation!Balance caps says realm bonuses fold into the joint cap without giving a per-grade rate | Combat multiplier per cultivation grade, inside the +40% joint cap. Deliberately small: Cultivation!Balance caps is explicit that realms primarily gate content rather than grant power. |
 | `CULTURE_PRESSURE_K` | 0.0004 | GDD §8.4 gives the shape ((cultureDelta)^2 * k, capped) but not k | Calibrated so a 100-point culture lead flips an adjacent plot over roughly three weeks, matching spec/04 §3 ("flip adjacent low-culture plots over weeks"). |
 | `CULTURE_PRESSURE_CAP` | 12 | GDD §8.4 states the cap exists but not its value | Caps a runaway culture lead at roughly one plot flip per day. |
 | `ATTRITION_ESCALATION` | 0.5 | spec/03 §4 says attrition escalates but does not give the rate | Each further hour out of supply adds 50% of the base 3% rate, so a stranded army becomes a problem to solve rather than a leak to tolerate. |

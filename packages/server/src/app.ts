@@ -30,6 +30,8 @@ import {
   enqueueSchema,
   problem,
   seizeSchema,
+  breakthroughSchema,
+  interfereSchema,
   spendShardsSchema,
   tierUpSchema,
   cancelQueueSchema,
@@ -289,6 +291,38 @@ export async function buildApp(opts: AppOptions = {}): Promise<App> {
           .map((q) => ({ researchKey: q.targetKey, settlementId: q.settlementId, finishesAt: q.finishesAt })),
       ),
     });
+  });
+
+  /**
+   * The player's own advancement.
+   *
+   * Includes the odds as they currently stand, broken into their terms. A
+   * breakthrough that fails for reasons nobody can inspect is the kind of thing
+   * that makes players believe the game cheats (invariant §2.7's spirit).
+   */
+  fastify.get('/v1/cultivation', async (req) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    return wire({
+      ...world.cultivation(playerId),
+      // Tribulations happening near you, which you may be able to crash.
+      visibleNearby: world.visibleTribulations(playerId),
+    });
+  });
+
+  fastify.post<{ Body: { settlementId?: string } }>('/v1/cultivation/breakthrough', async (req, reply) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const body = breakthroughSchema.parse(req.body);
+    const t = world.beginBreakthrough(body.commandId, playerId, body.settlementId);
+    tick();
+    return reply.status(201).send(wire(t));
+  });
+
+  fastify.post<{ Params: { id: string } }>('/v1/tribulations/:id/interfere', async (req) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const body = interfereSchema.parse(req.body);
+    const t = world.interfere(body.commandId, playerId, req.params.id);
+    tick();
+    return wire(t);
   });
 
   fastify.get('/v1/formations', async (req) => {

@@ -19,3 +19,4 @@ export * from './sim/combat.js';
 export * from './sim/veterancy.js';
 export * from './sim/military.js';
 export * from './sim/research.js';
+export * from './sim/cultivation.js';

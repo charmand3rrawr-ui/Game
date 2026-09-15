@@ -63,6 +63,10 @@ export interface Player {
   qi: bigint;
   /** 0..5 Chrono Shard karma. Raises tribulation difficulty, suppresses Qi regen. */
   temporalDebt: number;
+  /** Lazy Qi accrual marker. Cultivation income never ticks (spec/03 §3). */
+  lastQiAccruedAt?: Millis;
+  /** Set while a failed tribulation's suspension is still in force. */
+  cultivationStunnedUntil?: Millis;
   /** Heaven's Envy scopes currently marked: universe / quadrant / alliance. */
   envyScopes: string[];
   envyExpiresAt?: Millis;
@@ -434,6 +438,32 @@ export type EventKind =
   | 'DECAY_TICK'
   | 'HEAVENS_ENVY_RESOLVE'
   | 'EPOCH_TRANSITION';
+
+/**
+ * A tribulation standing open.
+ *
+ * Several are publicly visible and can be crashed by rivals (spec/04 §10), so
+ * this is a first-class row other players can see and act against — not a
+ * private timer.
+ */
+export interface Tribulation {
+  id: Uuid;
+  playerId: Uuid;
+  worldId: Uuid;
+  shardId: Uuid;
+  /** The grade being broken into. */
+  grade: number;
+  trialName: string;
+  visible: boolean;
+  crashable: boolean;
+  qiSpent: bigint;
+  /** Where the avatar is while it happens, so rivals know where to go. */
+  settlementId: Uuid;
+  openedAt: Millis;
+  resolvesAt: Millis;
+  /** Players who have interfered. Each one lowers the odds. */
+  interferers: Uuid[];
+}
 
 export interface LoggedEvent {
   id: Uuid;

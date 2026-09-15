@@ -101,10 +101,24 @@ a { color: var(--cool); }
   background: var(--bg-sunken);
   border-top: 1px solid var(--line);
   padding: 6px 6px calc(6px + var(--safe-bottom));
+  /* The bar outgrew a phone's width once cultivation and research arrived.
+     Scrolling it keeps every target finger-sized, which matters more than
+     seeing all ten at once — spec/06 §1 makes the phone the primary device. */
+  overflow-x: auto;
+  scrollbar-width: none;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
 }
+.tabs::-webkit-scrollbar { display: none; }
 .tabs button {
-  flex: 1; min-width: 0; background: transparent; border: none; border-radius: 8px;
-  padding: 8px 2px; font-size: 11px; color: var(--text-faint); display: grid; gap: 2px; justify-items: center;
+  flex: 0 0 auto; min-width: 62px; background: transparent; border: none; border-radius: 8px;
+  padding: 8px 4px; font-size: 11px; color: var(--text-faint); display: grid; gap: 2px; justify-items: center;
+  scroll-snap-align: center;
+}
+/* Wide enough for all of them: share the space evenly again. */
+@media (min-width: 700px) {
+  .tabs { overflow-x: visible; }
+  .tabs button { flex: 1 1 0; min-width: 0; }
 }
 .tabs button .glyph { font-size: 17px; line-height: 1; }
 .tabs button[aria-current='true'] { color: var(--accent); background: rgba(217, 164, 65, 0.09); }

@@ -112,6 +112,27 @@ export interface ResearchDto {
   inProgress: { researchKey: string; settlementId: string; finishesAt: string }[];
 }
 
+export interface TribulationDto {
+  id: string; playerId: string; grade: number; trialName: string;
+  visible: boolean; crashable: boolean; qiSpent: string; settlementId: string;
+  openedAt: string; resolvesAt: string; interferers: string[];
+}
+
+export interface CultivationDto {
+  grade: number;
+  realm: string;
+  qi: string;
+  income: { buildings: number; spiritVeins: number; meditation: number; perHour: number };
+  nextCost: string;
+  canAfford: boolean;
+  stunnedUntil?: string;
+  tribulation?: TribulationDto;
+  odds: { base: number; karma: number; debt: number; interference: number; chance: number };
+  aura: number;
+  ladder: { grade: number; realm: string; qiCost: string; trial: string; visible: boolean; crashable: boolean }[];
+  visibleNearby: TribulationDto[];
+}
+
 export interface MovementDto {
   id: string; ownerId: string; originId: string; targetId: string; mission: string;
   departsAt: string; arrivesAt: string; formations: { formationId: string; count: number }[];
@@ -149,6 +170,9 @@ export interface Api {
   movements(): Promise<{ movements: MovementDto[]; serverTime: number }>;
   options(settlementId: string): Promise<OptionsDto>;
   research(): Promise<ResearchDto>;
+  cultivation(): Promise<CultivationDto>;
+  breakthrough(settlementId: string): Promise<TribulationDto>;
+  interfere(tribulationId: string): Promise<TribulationDto>;
   battles(settlementId: string): Promise<{ battles: Battle[] }>;
   battle(id: string): Promise<Battle>;
   enqueue(settlementId: string, targetKey: string, slotKind: 'personal' | 'governor'): Promise<QueueItemDto>;
@@ -173,6 +197,11 @@ const remoteApi: Api = {
   movements: () => call('/movements'),
   options: (settlementId) => call(`/settlements/${settlementId}/options`),
   research: () => call('/research'),
+  cultivation: () => call('/cultivation'),
+  breakthrough: (settlementId) =>
+    call('/cultivation/breakthrough', { method: 'POST', body: JSON.stringify({ commandId: newCommandId(), settlementId }) }),
+  interfere: (tribulationId) =>
+    call(`/tribulations/${tribulationId}/interfere`, { method: 'POST', body: JSON.stringify({ commandId: newCommandId() }) }),
   battles: (settlementId) => call(`/settlements/${settlementId}/battles`),
   battle: (id) => call(`/battles/${id}`),
   enqueue: (settlementId, targetKey, slotKind) =>

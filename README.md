@@ -39,7 +39,7 @@ pnpm dev:client                        # http://localhost:5173
 | `packages/shared` | Domain types, the generated balance constants, and **all game math** as pure functions. Imported by both sides, so the client can never disagree with the server about a shape — or about a formula. |
 | `packages/engine` | The authoritative simulation: the event scheduler, settlements, combat, veterancy, and every command. No framework imports, no I/O, no clock reads. |
 | `packages/server` | Fastify gateway: REST commands, cold reads, WebSocket push, rate limiting, and the Postgres schema. |
-| `packages/client` | React + Vite. Attention Dashboard, map, settlement (build and train), command centre, formations, research, battle reports, simulator, codex. |
+| `packages/client` | React + Vite. Attention Dashboard, map, settlement (build and train), command centre, formations, research, cultivation, battle reports, simulator, codex. |
 | `packages/tools` | The balance importer. Reads the workbook, fails the build when a number moves. |
 | `data/` | `Ascendance_Master_Tables.xlsx` — the single source of truth for every number in the game. |
 | `spec/` | The specification. Read `spec/00_README_FIRST.md` first. |
@@ -105,6 +105,23 @@ the spec's prerequisites are enforced: an era needs every previous-era
 discipline at grade 12, a grade needs every same-era discipline one grade below
 it, and it needs cultivation to have kept pace.
 
+### Cultivation is where buying time is paid for
+
+Chrono Shards cannot be spent on a breakthrough at all — it is on the
+prohibition list. And the Temporal Debt they leave behind does two things here:
+it suppresses Qi income, and it lowers the odds of passing a tribulation. The
+one progression money cannot touch is also the one it actively damages.
+
+A breakthrough is not a purchase, either. Qi is spent the moment you declare,
+a window opens, and several trials are **publicly visible and crashable** — the
+workbook marks the Lightning Tribulation "visible to nearby players
+(crashable!)", and the importer fails the build if that ever stops parsing,
+because spec/08 M9's acceptance test depends on it existing.
+
+The odds are itemised before you commit — base, karma, debt, interference — for
+the same reason battle reports show their arithmetic. A breakthrough lost for
+reasons nobody can inspect is how players come to believe a game cheats.
+
 ### There is no game loop
 
 Nothing polls. Nothing iterates idle entities. Every future state change is a
@@ -149,7 +166,7 @@ server-side, and every spend is logged permanently.
 | M6 API and realtime | done |
 | M7 Client core | done |
 | M8 Social and governors | governors, Seize and the 2× rule done; alliances and treaties are modelled and enforced at dispatch, but have no UI yet |
-| M9 Espionage, conquest, cultivation | conquest and loyalty done; cultivation grade gates research breakthroughs, but Qi, tribulations and espionage are modelled in the schema only |
+| M9 Espionage, conquest, cultivation | conquest, loyalty and cultivation done — a tribulation is a scheduled, publicly visible event rivals can crash; espionage is modelled in the schema only |
 | M10 Monetization and integrity | Chrono Shard guardrails and Heaven's Envy done; linked-account detection is a field, not a detector |
 | M11 Live ops | not started |
 
@@ -168,7 +185,7 @@ missing verb cannot be reported as a finished milestone again.
 
 ```bash
 pnpm run import      # regenerate balance data; fails if an anchor moved
-pnpm -r run test     # 166 tests, including every milestone acceptance gate
+pnpm -r run test     # 192 tests, including every milestone acceptance gate
 pnpm -r run typecheck
 pnpm --filter @ascendance/client run smoke   # play the game in a real browser
 ```

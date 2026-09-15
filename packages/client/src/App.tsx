@@ -16,6 +16,7 @@ import { Settlement } from './screens/Settlement.js';
 import { Command } from './screens/Command.js';
 import { Formations } from './screens/Formations.js';
 import { Research } from './screens/Research.js';
+import { Cultivation } from './screens/Cultivation.js';
 import { BattleReport } from './screens/BattleReport.js';
 import { Simulator } from './screens/Simulator.js';
 import { Codex } from './screens/Codex.js';
@@ -29,6 +30,7 @@ const TABS = [
   { id: 'command', glyph: '⚔', label: 'Command' },
   { id: 'formations', glyph: '⚑', label: 'Forces' },
   { id: 'research', glyph: '⚙', label: 'Research' },
+  { id: 'cultivation', glyph: '☯', label: 'Dao' },
   { id: 'battle', glyph: '⛏', label: 'Reports' },
   { id: 'simulator', glyph: '≈', label: 'Sim' },
   { id: 'codex', glyph: '☷', label: 'Codex' },
@@ -62,6 +64,15 @@ export function App(): JSX.Element {
             const data = msg.data as { summary: string };
             store.toast('warn', 'Battle resolved', data.summary);
           }
+          if (msg.event === 'tribulation.resolved') {
+            const d = msg.data as { passed: boolean; narrative: string };
+            store.toast(d.passed ? 'ok' : 'error', d.passed ? 'Breakthrough' : 'The trial overcame you', d.narrative);
+          }
+          if (msg.event === 'tribulation.opened') {
+            const d = msg.data as { playerName: string; trial: string; crashable: boolean };
+            store.toast('warn', `${d.playerName} is breaking through`,
+              d.crashable ? `A ${d.trial} is open nearby. It can be crashed.` : `A ${d.trial} is under way nearby.`);
+          }
         }
         void refresh();
       }, 5000);
@@ -80,6 +91,19 @@ export function App(): JSX.Element {
       }
       if (env.event === 'battle.resolved') {
         store.toast('warn', 'Battle resolved', (env.data as { summary: string }).summary);
+      }
+      if (env.event === 'tribulation.opened') {
+        const d = env.data as { playerName: string; trial: string; crashable: boolean };
+        store.toast('warn', `${d.playerName} is breaking through`,
+          d.crashable ? `A ${d.trial} is open nearby. It can be crashed.` : `A ${d.trial} is under way nearby.`);
+      }
+      if (env.event === 'tribulation.crashed') {
+        store.toast('error', 'Your tribulation is being crashed',
+          `${(env.data as { interferers: number }).interferers} rival(s) are interfering.`);
+      }
+      if (env.event === 'tribulation.resolved') {
+        const d = env.data as { passed: boolean; narrative: string };
+        store.toast(d.passed ? 'ok' : 'error', d.passed ? 'Breakthrough' : 'The trial overcame you', d.narrative);
       }
       if (env.event === 'resource.overflow') {
         store.toast('warn', 'A warehouse is full', 'Production above capacity is being lost.');
@@ -131,6 +155,7 @@ export function App(): JSX.Element {
         {screen === 'command' && <Command />}
         {screen === 'formations' && <Formations />}
         {screen === 'research' && <Research />}
+        {screen === 'cultivation' && <Cultivation />}
         {screen === 'battle' && <BattleReport />}
         {screen === 'simulator' && <Simulator />}
         {screen === 'codex' && <Codex />}

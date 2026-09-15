@@ -143,7 +143,26 @@ interface RefUnitGrade {
 }
 interface RefUnitPath { path: string; atkMod: number; defMod: number; hpMod: number; speedMod: number; identity: string }
 interface RefVeterancyTier { tier: number; name: string; cumulativeLevels: number; totalStatBonus: number; tierUpCost: string; reputation: string }
-interface RefGrade { grade: number; realmStage: string; minLevel: number; maxLevel: number; qiCost: string; tribulation: string }
+interface RefGrade {
+  grade: number; realmStage: string; minLevel: number; maxLevel: number; qiCost: string; tribulation: string;
+  /** Parsed from the Tribulation column: what the trial actually does. */
+  trial: RefTrial;
+}
+
+interface RefTrial {
+  /** The trial's own name, e.g. "Lightning Tribulation". */
+  name: string;
+  /** No trial at all — the mortal realms are passed by effort alone. */
+  none: boolean;
+  /** Nearby players can see this one happening. */
+  visible: boolean;
+  /** And can interfere with it. This is the M9 acceptance test. */
+  crashable: boolean;
+  /** Failure suspends cultivation for this long, where the sheet says so. */
+  stunMs: number;
+  /** Difficulty is weighted by the player's reputation. */
+  karmaWeighted: boolean;
+}
 interface RefHolding { key: string; name: string; era: string; layer: string; plotsAtFounding: number; maxPlots: number; adminCost: number; produces: string; notes: string }
 interface RefResearch {
   key: string; name: string; era: number; branch: string; perLevel: string; prerequisite: string;
@@ -171,6 +190,7 @@ async function main(): Promise<void> {
   // ------------------------------------------------------------------ grades
   const gradesSheet = wb.sheet('Grades_Realms');
   const grades = readGrades(gradesSheet);
+  assertTribulationsParsed(grades);
   const MAX_GRADE = C.derived('MAX_GRADE', grades.length, 'Grades_Realms row count', 'The 42-grade spine.');
   const MAX_LEVEL = C.derived(
     'MAX_LEVEL',
@@ -475,6 +495,78 @@ async function main(): Promise<void> {
     [0, 1],
   );
 
+  // ------------------------------------------------------------ cultivation
+  const TRIBULATION_WINDOW_MS = C.assumed(
+    'TRIBULATION_WINDOW_MS',
+    4 * 3_600_000,
+    'Cultivation!Breakthroughs calls tribulations "live events" without a duration',
+    'How long a tribulation stands open between being declared and resolving. Long enough that a ' +
+      'rival who sees a visible one has time to travel and interfere, which is the whole point of ' +
+      'making them public.',
+  );
+  const TRIBULATION_BASE_SUCCESS = C.assumed(
+    'TRIBULATION_BASE_SUCCESS',
+    0.85,
+    'Grades_Realms describes each trial but gives no pass rate',
+    'Base chance of passing a tribulation before karma and interference. High, because the Qi cost ' +
+      'is already the real gate and losing a breakthrough to a coin flip would be miserable.',
+  );
+  const TRIBULATION_PER_DEBT_TIER = C.assumed(
+    'TRIBULATION_PER_DEBT_TIER',
+    0.06,
+    'spec/04 §11 guardrail 3 says Temporal Debt raises tribulation difficulty without a rate',
+    'Pass chance lost per tier of Temporal Debt. This is where buying time is actually paid for: ' +
+      'the cultivation game is the one thing money cannot accelerate.',
+  );
+  const TRIBULATION_PER_REPUTATION = C.assumed(
+    'TRIBULATION_PER_REPUTATION',
+    0.0015,
+    'Cultivation!Karma says karmic weight modifies tribulation difficulty without a rate',
+    'Pass chance gained per point of reputation on a karma-weighted trial, and lost per point of ' +
+      'infamy. Betrayal stays allowed and stays priced.',
+  );
+  const TRIBULATION_CRASH_PENALTY = C.assumed(
+    'TRIBULATION_CRASH_PENALTY',
+    0.12,
+    'Grades_Realms marks a trial "crashable" without saying what crashing it does',
+    'Pass chance lost per rival who interferes with a visible tribulation. Enough that crashing one ' +
+      'is worth the trip, not so much that one rival decides it.',
+  );
+  const TRIBULATION_FAILURE_QI_KEPT = C.assumed(
+    'TRIBULATION_FAILURE_QI_KEPT',
+    0.4,
+    'Grades_Realms does not say what a failed breakthrough costs beyond the stun it names',
+    'Fraction of the spent Qi returned on failure. A failed breakthrough hurts without erasing months ' +
+      'of accumulation.',
+  );
+  const QI_PER_CULTIVATION_BUILDING = C.assumed(
+    'QI_PER_CULTIVATION_BUILDING',
+    4,
+    'Cultivation!Qi names the sources (Spirit Groves, Qi Gathering Stones, Spirit Wells) without rates',
+    'Qi per hour per level-scaled cultivation building, summed across every holding — cultivation is ' +
+      'player-level progression, so its income is too.',
+  );
+  const QI_PER_SPIRIT_VEIN = C.assumed(
+    'QI_PER_SPIRIT_VEIN',
+    12,
+    'Cultivation!Qi names Spirit Vein tiles as a source without a rate',
+    'Qi per hour per Spirit Vein tile, which is what makes those tiles worth fighting over.',
+  );
+  const QI_IDLE_PER_HOUR = C.assumed(
+    'QI_IDLE_PER_HOUR',
+    2,
+    'Cultivation!Qi lists idle meditation as a source without a rate',
+    'Qi per hour from meditation alone, so a player with no cultivation buildings still advances, ' +
+      'slowly, and the realm ladder is never completely shut to them.',
+  );
+  const CULTIVATION_AURA_PER_GRADE = C.assumed(
+    'CULTIVATION_AURA_PER_GRADE',
+    0.004,
+    'Cultivation!Balance caps says realm bonuses fold into the joint cap without giving a per-grade rate',
+    'Combat multiplier per cultivation grade, inside the +40% joint cap. Deliberately small: ' +
+      'Cultivation!Balance caps is explicit that realms primarily gate content rather than grant power.',
+  );
+
   // -------------------------------------------------------------- governors
   const GOVERNOR_TIME_MULT = C.fromSpec('GOVERNOR_TIME_MULT', 2.0, 'spec/04 §6 · the 2x rule', 'Anything a governor initiates takes twice as long. That field is the whole mechanic.', [1, 10]);
   const PLAYER_TIME_MULT = C.fromSpec('PLAYER_TIME_MULT', 1.0, 'spec/04 §6', '', [0.1, 2]);
@@ -679,6 +771,7 @@ function readGrades(s: Sheet): RefGrade[] {
       maxLevel: numOrDie(r[cMax], `Grades_Realms row ${i + 2} Max Level`),
       qiCost: String(Math.round(numOrDie(r[cQi], `Grades_Realms row ${i + 2} Qi`))),
       tribulation: String(r[cTrib] ?? ''),
+      trial: parseTrial(String(r[cTrib] ?? '')),
     });
   }
   return out;
@@ -1175,6 +1268,35 @@ function assertEmpireWeightCurve(s: Sheet, k: { EW_KNEE: number; EW_STEEPNESS: n
   if (checked < 8) throw new ImportError(`Empire_Weight_Multiplier: only ${checked} curve rows verified; expected the full published curve`);
 }
 
+/**
+ * The tribulation ladder has to survive the parse.
+ *
+ * spec/08 M9's acceptance test is that "a tribulation is a scheduled, publicly
+ * visible event that rivals can interfere with". If no grade parses as
+ * crashable, that event does not exist and the milestone cannot be met — so
+ * this fails the build rather than shipping a cultivation system with the
+ * interesting part quietly missing.
+ */
+function assertTribulationsParsed(grades: RefGrade[]): void {
+  const crashable = grades.filter((g) => g.trial.crashable);
+  if (crashable.length === 0) {
+    throw new ImportError(
+      'Grades_Realms: no tribulation parsed as crashable. spec/08 M9 requires a publicly visible trial ' +
+        'that rivals can interfere with; the Tribulation column no longer says so in a form this can read.',
+    );
+  }
+  const named = grades.filter((g) => !g.trial.none);
+  if (named.length < 30) {
+    throw new ImportError(`Grades_Realms: only ${named.length} grades carry a tribulation; expected most of the 42`);
+  }
+  if (!grades.some((g) => g.trial.stunMs > 0)) {
+    throw new ImportError('Grades_Realms: no tribulation parsed a failure stun duration');
+  }
+  if (!grades.some((g) => g.trial.karmaWeighted)) {
+    throw new ImportError('Grades_Realms: no tribulation parsed as reputation-weighted');
+  }
+}
+
 function assertQiCurve(grades: RefGrade[], k: { QI_BASE: number; QI_EXP: number; QI_GEO: number }): void {
   for (const g of grades) {
     const expected = Math.round(k.QI_BASE * Math.pow(g.grade, k.QI_EXP) * Math.pow(k.QI_GEO, g.grade));
@@ -1422,7 +1544,26 @@ function renderRefData(hash: string, d: Record<string, unknown>): string {
 }`);
   lines.push(`export interface RefUnitPath { path: string; atkMod: number; defMod: number; hpMod: number; speedMod: number; identity: string }`);
   lines.push(`export interface RefVeterancyTier { tier: number; name: string; cumulativeLevels: number; totalStatBonus: number; tierUpCost: string; reputation: string }`);
-  lines.push(`export interface RefGrade { grade: number; realmStage: string; minLevel: number; maxLevel: number; qiCost: string; tribulation: string }`);
+  lines.push(`export interface RefGrade {
+  grade: number; realmStage: string; minLevel: number; maxLevel: number; qiCost: string; tribulation: string;
+  /** Parsed from the Tribulation column: what the trial actually does. */
+  trial: RefTrial;
+}
+
+interface RefTrial {
+  /** The trial's own name, e.g. "Lightning Tribulation". */
+  name: string;
+  /** No trial at all — the mortal realms are passed by effort alone. */
+  none: boolean;
+  /** Nearby players can see this one happening. */
+  visible: boolean;
+  /** And can interfere with it. This is the M9 acceptance test. */
+  crashable: boolean;
+  /** Failure suspends cultivation for this long, where the sheet says so. */
+  stunMs: number;
+  /** Difficulty is weighted by the player's reputation. */
+  karmaWeighted: boolean;
+}`);
   lines.push(`export interface RefHolding { key: string; name: string; era: string; layer: string; plotsAtFounding: number; maxPlots: number; adminCost: number; produces: string; notes: string }`);
   lines.push(`export interface RefResearch {
   key: string; name: string; era: number; branch: string; perLevel: string; prerequisite: string;
@@ -1574,6 +1715,33 @@ function approx(what: string, expected: number, actual: number, tol: number): vo
     throw new ImportError(`${what}: workbook says ${expected}, emitted constants give ${actual}`);
   }
 }
+/**
+ * Read a tribulation out of the Grades_Realms prose.
+ *
+ * The Tribulation column is the only description of these events in the whole
+ * data set, and it carries real mechanics in its wording — "visible to nearby
+ * players (crashable!)", "failure stuns cultivation 48h",
+ * "reputation-weighted trial". Parsing it keeps those tied to the workbook
+ * instead of being retyped into game logic, and the assertion after the reader
+ * fails the build if the one crashable trial ever stops being findable.
+ */
+function parseTrial(text: string): {
+  name: string; none: boolean; visible: boolean; crashable: boolean; stunMs: number; karmaWeighted: boolean;
+} {
+  const trimmed = text.trim();
+  const none = /^none\b/i.test(trimmed);
+  const name = none ? 'None' : (trimmed.split(':')[0] ?? trimmed).trim();
+  const stun = /stuns?\s+cultivation\s+(\d+)\s*h/i.exec(trimmed);
+  return {
+    name,
+    none,
+    visible: /visible/i.test(trimmed) || /crashable/i.test(trimmed),
+    crashable: /crashable/i.test(trimmed),
+    stunMs: stun ? Number(stun[1]) * 3_600_000 : 0,
+    karmaWeighted: /reputation-weighted|karmic/i.test(trimmed),
+  };
+}
+
 /** Read a numeric gate out of a prose Unlock cell. 0 means "no such gate". */
 function parseGate(text: string, pattern: RegExp): number {
   const m = pattern.exec(text);

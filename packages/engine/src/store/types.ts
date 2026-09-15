@@ -36,6 +36,7 @@ import type {
   Settlement,
   Stockpile,
   Treaty,
+  Tribulation,
   Uuid,
   Millis,
 } from '@ascendance/shared';
@@ -62,6 +63,7 @@ export interface Tx {
   allianceMembers: KeyedRepo<AllianceMember>;
   treaties: Repo<Treaty>;
   governors: Repo<Governor>;
+  tribulations: Repo<Tribulation>;
   scheduled: Repo<ScheduledEvent>;
 
   /** Append-only. Never updated, never deleted (spec/02 §7). */

@@ -134,6 +134,18 @@ export const proposeTreatySchema = commandBase.extend({
   expiresAt: millisString.optional(),
 });
 
+/**
+ * Declaring a breakthrough names WHERE the avatar will be while it happens.
+ *
+ * That matters because several tribulations are publicly visible, and a rival
+ * who wants to crash one has to know where to go (spec/04 §10).
+ */
+export const breakthroughSchema = commandBase.extend({
+  settlementId: uuid,
+});
+
+export const interfereSchema = commandBase;
+
 export const renameFormationSchema = commandBase.extend({
   name: z.string().min(1).max(64),
 });
@@ -163,6 +175,10 @@ export interface ServerEvents {
   'governor.stalled': { governorId: string; settlementId: string; reason: string };
   'treaty.proposed': { treatyId: string; from: string; kind: string; terms: Record<string, unknown> };
   'envy.marked': { playerId: string; scopes: string[]; expiresAt: string };
+  /** A visible tribulation has opened. Rivals may be able to crash it. */
+  'tribulation.opened': { tribulationId: string; playerId: string; playerName: string; settlementId: string; trial: string; crashable: boolean; resolvesAt: string };
+  'tribulation.crashed': { tribulationId: string; by: string; interferers: number };
+  'tribulation.resolved': { tribulationId: string; passed: boolean; grade?: number; realm?: string; narrative: string; chance?: number; roll?: number };
   'map.delta': { shard: string; changes: MapChange[] };
   'epoch.progress': { conditionKey: string; leaders: string[]; pct: number };
 }

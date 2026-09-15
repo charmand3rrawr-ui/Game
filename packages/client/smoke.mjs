@@ -23,7 +23,7 @@ const PORT = 4173;
 const SITE = `http://127.0.0.1:${PORT}/`;
 const OUT = new URL('./smoke-output/', import.meta.url).pathname;
 
-const TABS = ['Attention', 'Map', 'Holding', 'Command', 'Forces', 'Research', 'Reports', 'Sim', 'Codex'];
+const TABS = ['Attention', 'Map', 'Holding', 'Command', 'Forces', 'Research', 'Dao', 'Reports', 'Sim', 'Codex'];
 
 /**
  * Click something in the page body.
@@ -169,6 +169,16 @@ async function main() {
     const effects = await page.locator('.card .num').first().textContent().catch(() => '');
     check('research effects are shown', /\u00d7\d/.test(effects ?? ''), effects ?? '');
     await page.screenshot({ path: `${OUT}/22-research.png` });
+
+    // --- CULTIVATION ------------------------------------------------------
+    // spec/08 M9: a tribulation is a scheduled, publicly visible event that
+    // rivals can interfere with. The screen has to say so before you commit.
+    await tab(TABS.indexOf('Dao'));
+    await page.waitForTimeout(1200);
+    const dao = await page.locator('.main').innerText();
+    check('cultivation shows the realm and the Qi income', /realm/i.test(dao) && /QI/i.test(dao), dao.slice(0, 80));
+    check('a breakthrough states its odds before you commit', /CHANCE TO PASS/i.test(dao));
+    await page.screenshot({ path: `${OUT}/23-cultivation.png` });
 
     // --- the simulator runs the real resolver ----------------------------
     await tab(TABS.indexOf('Sim'));
