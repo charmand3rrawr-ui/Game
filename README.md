@@ -39,7 +39,7 @@ pnpm dev:client                        # http://localhost:5173
 | `packages/shared` | Domain types, the generated balance constants, and **all game math** as pure functions. Imported by both sides, so the client can never disagree with the server about a shape — or about a formula. |
 | `packages/engine` | The authoritative simulation: the event scheduler, settlements, combat, veterancy, and every command. No framework imports, no I/O, no clock reads. |
 | `packages/server` | Fastify gateway: REST commands, cold reads, WebSocket push, rate limiting, and the Postgres schema. |
-| `packages/client` | React + Vite. Attention Dashboard, map, settlement, command centre, formations, battle reports, simulator, codex. |
+| `packages/client` | React + Vite. Attention Dashboard, map, settlement (build and train), command centre, formations, research, battle reports, simulator, codex. |
 | `packages/tools` | The balance importer. Reads the workbook, fails the build when a number moves. |
 | `data/` | `Ascendance_Master_Tables.xlsx` — the single source of truth for every number in the game. |
 | `spec/` | The specification. Read `spec/00_README_FIRST.md` first. |
@@ -91,6 +91,20 @@ than a claim in a document.
 Getting that to match exactly took reproducing the workbook's own rounding,
 which is not uniform. See [`DECISIONS.md`](DECISIONS.md) D1.
 
+### Research is the one thing that is not isolated
+
+Everything else a settlement owns is its own: its stockpile, its queues, its
+population. Research is the exception spec/04 §3 carves out, because without it
+a wide empire would be unplayable — nobody will research the same discipline in
+four hundred settlements.
+
+But it is still **paid locally**. A level is queued at one settlement, from that
+settlement's stockpile, in that settlement's build slot, competing directly with
+raising a building there. The benefit is global; the cost is not. All three of
+the spec's prerequisites are enforced: an era needs every previous-era
+discipline at grade 12, a grade needs every same-era discipline one grade below
+it, and it needs cultivation to have kept pace.
+
 ### There is no game loop
 
 Nothing polls. Nothing iterates idle entities. Every future state change is a
@@ -135,7 +149,7 @@ server-side, and every spend is logged permanently.
 | M6 API and realtime | done |
 | M7 Client core | done |
 | M8 Social and governors | governors, Seize and the 2× rule done; alliances and treaties are modelled and enforced at dispatch, but have no UI yet |
-| M9 Espionage, conquest, cultivation | conquest and loyalty done; espionage and cultivation are modelled in the schema only |
+| M9 Espionage, conquest, cultivation | conquest and loyalty done; cultivation grade gates research breakthroughs, but Qi, tribulations and espionage are modelled in the schema only |
 | M10 Monetization and integrity | Chrono Shard guardrails and Heaven's Envy done; linked-account detection is a field, not a detector |
 | M11 Live ops | not started |
 
@@ -143,11 +157,18 @@ Every milestone marked done passes its acceptance test from
 [`spec/08_build_order.md`](spec/08_build_order.md). The tests are named after
 them.
 
+One correction worth recording: M3 was marked done here while training was not
+actually implemented — `enqueue` routed every queue kind down the building
+path, so a training order failed with "unknown building". Unit tests passed
+because none of them tried. The browser smoke test now walks the whole of M7's
+loop, *"build, train, dispatch, resolve, read the report"*, precisely so a
+missing verb cannot be reported as a finished milestone again.
+
 ## Development
 
 ```bash
 pnpm run import      # regenerate balance data; fails if an anchor moved
-pnpm -r run test     # 139 tests, including every milestone acceptance gate
+pnpm -r run test     # 166 tests, including every milestone acceptance gate
 pnpm -r run typecheck
 pnpm --filter @ascendance/client run smoke   # play the game in a real browser
 ```

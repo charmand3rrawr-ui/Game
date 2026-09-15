@@ -51,6 +51,7 @@ import { IdFactory, Scheduler } from './scheduler.js';
 import {
   accrueProduction,
   buildingRef,
+  buildingsForEra,
   holdingRef,
   hqFactorFor,
   hqLevel,
@@ -66,6 +67,14 @@ import {
 } from './sim/settlement.js';
 import { resolveBattle, isOccupier, type BattleInput, type CombatUnit, type SideInput } from './sim/combat.js';
 import { attributeBattle, applyAward, checkPromotion, reinforce } from './sim/veterancy.js';
+import {
+  defaultFormationName, facilitySpeedFor, trainableHere, trainingCost, trainingSlots,
+  validateTrainingEnqueue, type TrainingContext,
+} from './sim/military.js';
+import {
+  disciplinesForEra, knowledgeFactorFor, levelOf, researchCost, researchEffects, researchRef,
+  techTier, validateResearchEnqueue, type ResearchLevels,
+} from './sim/research.js';
 
 export class CommandError extends Error {
   constructor(
@@ -93,6 +102,13 @@ export interface EnqueueArgs {
   targetKey: string;
   quantity?: number;
   slotKind: SlotKind;
+}
+
+/** What a settlement could do next, with the server's costs already computed. */
+export interface Options {
+  buildings: { key: string; name: string; category: string; currentLevel: number; cost: Record<string, bigint>; timeMs: Millis }[];
+  training: { unitKey: string; name: string; role: string; grade: string; allowed: boolean; reason?: string; cost: Record<string, bigint>; timeMs: Millis }[];
+  research: { key: string; name: string; era: number; branch: string; level: number; grade: number; allowed: boolean; reason?: string; cost: Record<string, bigint>; timeMs: Millis }[];
 }
 
 export interface DispatchArgs {
@@ -386,6 +402,15 @@ export class World {
    * the client can say something useful.
    */
   enqueue(args: EnqueueArgs): QueueItem {
+    // Each kind has its own gates, its own cost curve and its own slot pool.
+    // They share only the queue row and the rule that finishesAt is computed
+    // once and stored absolute (invariant §2.8).
+    if (args.kind === 'training') return this.enqueueTraining(args);
+    if (args.kind === 'research') return this.enqueueResearch(args);
+    return this.enqueueBuilding(args);
+  }
+
+  private enqueueBuilding(args: EnqueueArgs): QueueItem {
     return this.idempotent(args.commandId, (tx) => {
       const view = this.viewIn(tx, args.settlementId);
       if (view.settlement.ownerId !== args.playerId) {
@@ -456,6 +481,190 @@ export class World {
     });
   }
 
+  /**
+   * Train a batch of units.
+   *
+   * They spawn in THIS settlement and must physically travel to be anywhere
+   * else (spec/04 §4). There is no empire-wide muster: an army exists where it
+   * was built, and moving it is a movement that can be seen and intercepted.
+   */
+  private enqueueTraining(args: EnqueueArgs): QueueItem {
+    return this.idempotent(args.commandId, (tx) => {
+      const view = this.viewIn(tx, args.settlementId);
+      if (view.settlement.ownerId !== args.playerId) {
+        throw new CommandError('not-owner', 'you do not own this settlement');
+      }
+      const quantity = args.quantity ?? 1;
+      const ctx = this.trainingContext(tx, args.playerId, args.settlementId);
+
+      const check = validateTrainingEnqueue(ctx, args.targetKey, quantity);
+      if (!check.ok) throw new CommandError(check.type, check.detail, check.meta);
+
+      const timeMultiplier = args.slotKind === 'governor' ? C.GOVERNOR_TIME_MULT : C.PLAYER_TIME_MULT;
+      const cost = trainingCost(args.targetKey, quantity, facilitySpeedFor(view), timeMultiplier);
+
+      this.settleAccrual(tx, view);
+      const afford = validateAffordable(this.viewIn(tx, args.settlementId), cost.resources);
+      if (!afford.ok) throw new CommandError(afford.type, afford.detail, afford.meta);
+      for (const [key, amount] of Object.entries(cost.resources)) {
+        const sp = tx.stockpiles.get(args.settlementId, key);
+        if (sp) tx.stockpiles.put({ ...sp, amount: sp.amount - amount });
+      }
+
+      const def = unitDef(args.targetKey);
+      const existing = tx.formations.where((f) => f.settlementId === args.settlementId && f.unitKey === args.targetKey);
+      const item: QueueItem = {
+        id: this.ids.next('q', this.clock),
+        settlementId: args.settlementId,
+        kind: 'training',
+        targetKey: args.targetKey,
+        quantity,
+        slotKind: args.slotKind,
+        startedAt: this.clock,
+        finishesAt: this.clock + cost.totalTimeMs,
+        timeMultiplier,
+        shardHoursSpent: 0,
+        compressedMs: 0n,
+        position: view.queue.length,
+      };
+      tx.queue.put(item);
+
+      this.scheduler.schedule(tx, {
+        shardId: view.settlement.shardId,
+        executeAt: item.finishesAt,
+        kind: 'TRAINING_COMPLETE',
+        payload: {
+          queueItemId: item.id,
+          settlementId: args.settlementId,
+          unitKey: args.targetKey,
+          quantity,
+          formationName: existing[0]?.name ?? defaultFormationName(def, existing.length),
+        },
+      });
+
+      tx.appendEvent({
+        id: this.ids.next('log', this.clock),
+        worldId: this.worldId,
+        shardId: view.settlement.shardId,
+        occurredAt: this.clock,
+        kind: 'training.enqueued',
+        actorId: args.playerId,
+        subjectId: args.settlementId,
+        payload: { unitKey: args.targetKey, quantity, finishesAt: item.finishesAt.toString() },
+      });
+
+      return item;
+    });
+  }
+
+  /**
+   * Raise a research discipline by one level.
+   *
+   * THE LEVEL IS GLOBAL; THE COST IS LOCAL. Research is the single exception to
+   * production isolation (spec/04 §3) — but the resources come out of the
+   * settlement that hosts the work, and it occupies that settlement's queue
+   * slot. That split is what makes a wide empire playable without dissolving
+   * the isolation invariant.
+   */
+  private enqueueResearch(args: EnqueueArgs): QueueItem {
+    return this.idempotent(args.commandId, (tx) => {
+      const view = this.viewIn(tx, args.settlementId);
+      if (view.settlement.ownerId !== args.playerId) {
+        throw new CommandError('not-owner', 'you do not own this settlement');
+      }
+      const player = tx.players.require(args.playerId);
+      const levels = this.researchLevels(tx, args.playerId);
+
+      const check = validateResearchEnqueue(args.targetKey, {
+        levels,
+        playerEra: player.era,
+        cultivationGrade: player.cultivationGrade,
+        hasKnowledgeBuilding: view.buildings.some((b) => buildingRef(b.buildingKey).category === 'Knowledge'),
+      });
+      if (!check.ok) throw new CommandError(check.type, check.detail, check.meta);
+
+      // A discipline may only be in progress once at a time anywhere in the
+      // empire. Without this, a wide player could queue the same level in
+      // forty settlements and buy the global level forty times over.
+      const already = tx.queue.find(
+        (q) => q.kind === 'research' && q.targetKey === args.targetKey &&
+          tx.settlements.get(q.settlementId)?.ownerId === args.playerId,
+      );
+      if (already) {
+        throw new CommandError('validation', `${researchRef(args.targetKey).name} is already being researched`, {
+          settlementId: already.settlementId,
+        });
+      }
+
+      const slotKind = args.slotKind;
+      const used = view.queue.filter((q) => q.slotKind === slotKind && q.kind !== 'training').length;
+      const available = slotKind === 'personal'
+        ? personalQueueSlots(gradeForLevel(hqLevel(view)))
+        : C.GOVERNOR_QUEUE_SLOTS;
+      if (used >= available) {
+        throw new CommandError(
+          slotKind === 'personal' ? 'no-free-personal-slot' : 'no-free-queue-slot',
+          `all ${available} ${slotKind} slots are busy`,
+          { used, available, slotKind },
+        );
+      }
+
+      const bestKnowledge = Math.max(
+        0,
+        ...view.buildings.filter((b) => buildingRef(b.buildingKey).category === 'Knowledge').map((b) => b.level),
+        0,
+      );
+      const timeMultiplier = slotKind === 'governor' ? C.GOVERNOR_TIME_MULT : C.PLAYER_TIME_MULT;
+      const fromLevel = levelOf(levels, args.targetKey);
+      const cost = researchCost(args.targetKey, fromLevel, knowledgeFactorFor(bestKnowledge), timeMultiplier);
+
+      this.settleAccrual(tx, view);
+      const afford = validateAffordable(this.viewIn(tx, args.settlementId), cost.resources);
+      if (!afford.ok) throw new CommandError(afford.type, afford.detail, afford.meta);
+      for (const [key, amount] of Object.entries(cost.resources)) {
+        const sp = tx.stockpiles.get(args.settlementId, key);
+        if (sp) tx.stockpiles.put({ ...sp, amount: sp.amount - amount });
+      }
+
+      const item: QueueItem = {
+        id: this.ids.next('q', this.clock),
+        settlementId: args.settlementId,
+        kind: 'research',
+        targetKey: args.targetKey,
+        targetLevel: fromLevel + 1,
+        quantity: 1,
+        slotKind,
+        startedAt: this.clock,
+        finishesAt: this.clock + cost.totalTimeMs,
+        timeMultiplier,
+        shardHoursSpent: 0,
+        compressedMs: 0n,
+        position: view.queue.length,
+      };
+      tx.queue.put(item);
+
+      this.scheduler.schedule(tx, {
+        shardId: view.settlement.shardId,
+        executeAt: item.finishesAt,
+        kind: 'RESEARCH_COMPLETE',
+        payload: { queueItemId: item.id, settlementId: args.settlementId, playerId: args.playerId, researchKey: args.targetKey },
+      });
+
+      tx.appendEvent({
+        id: this.ids.next('log', this.clock),
+        worldId: this.worldId,
+        shardId: view.settlement.shardId,
+        occurredAt: this.clock,
+        kind: 'research.enqueued',
+        actorId: args.playerId,
+        subjectId: args.settlementId,
+        payload: { researchKey: args.targetKey, toLevel: fromLevel + 1 },
+      });
+
+      return item;
+    });
+  }
+
   /** Cancel a queue item. Refunds 80% of resources (spec/05 §2). */
   cancelQueueItem(commandId: Uuid, playerId: Uuid, itemId: Uuid): { refunded: Record<string, string> } {
     return this.idempotent(commandId, (tx) => {
@@ -465,10 +674,12 @@ export class World {
       if (view.settlement.ownerId !== playerId) throw new CommandError('not-owner', 'you do not own this settlement');
       if (item.finishesAt <= this.clock) throw new CommandError('already-complete', 'this item has already completed');
 
-      const existing = view.buildings.find((b) => b.buildingKey === item.targetKey);
-      const cost = upgradeCost(item.targetKey, existing?.level ?? 0, hqFactorFor(hqLevel(view)), 1, item.timeMultiplier);
+      // Refund what this kind of item actually cost. A training batch and a
+      // research level do not ride the building curve, and refunding them as
+      // though they did would hand back the wrong resources.
+      const resources = this.costOf(tx, item, view);
       const refunded: Record<string, string> = {};
-      for (const [key, amount] of Object.entries(cost.resources)) {
+      for (const [key, amount] of Object.entries(resources)) {
         const back = (amount * BigInt(Math.round(C.CANCEL_REFUND_PCT * 100))) / 100n;
         const sp = tx.stockpiles.get(item.settlementId, key);
         if (sp) tx.stockpiles.put({ ...sp, amount: sp.amount + back });
@@ -481,6 +692,25 @@ export class World {
       }
       return { refunded };
     });
+  }
+
+  /** What a queue item cost when it was enqueued, by kind. */
+  private costOf(tx: Tx, item: QueueItem, view: SettlementView): Record<string, bigint> {
+    if (item.kind === 'training') {
+      return trainingCost(item.targetKey, item.quantity, facilitySpeedFor(view), item.timeMultiplier).resources;
+    }
+    if (item.kind === 'research') {
+      const owner = view.settlement.ownerId;
+      const level = owner ? levelOf(this.researchLevels(tx, owner), item.targetKey) : 0;
+      const bestKnowledge = Math.max(
+        0,
+        ...view.buildings.filter((b) => buildingRef(b.buildingKey).category === 'Knowledge').map((b) => b.level),
+        0,
+      );
+      return researchCost(item.targetKey, level, knowledgeFactorFor(bestKnowledge), item.timeMultiplier).resources;
+    }
+    const existing = view.buildings.find((b) => b.buildingKey === item.targetKey);
+    return upgradeCost(item.targetKey, existing?.level ?? 0, hqFactorFor(hqLevel(view)), 1, item.timeMultiplier).resources;
   }
 
   /**
@@ -529,12 +759,7 @@ export class World {
       for (const ev of tx.scheduled.where((e) => (e.payload as { queueItemId?: string }).queueItemId === itemId)) {
         this.scheduler.cancel(tx, ev.id);
       }
-      this.scheduler.schedule(tx, {
-        shardId: view.settlement.shardId,
-        executeAt: seized.finishesAt,
-        kind: 'BUILD_COMPLETE',
-        payload: { queueItemId: seized.id, settlementId: seized.settlementId },
-      });
+      this.rescheduleCompletion(tx, seized, view);
 
       // Seize is an AUDITED action — one of only two things that may move a
       // completion time downward (invariant §2.8).
@@ -638,12 +863,7 @@ export class World {
       for (const ev of tx.scheduled.where((e) => (e.payload as { queueItemId?: string }).queueItemId === itemId)) {
         this.scheduler.cancel(tx, ev.id);
       }
-      this.scheduler.schedule(tx, {
-        shardId: view.settlement.shardId,
-        executeAt: updated.finishesAt,
-        kind: 'BUILD_COMPLETE',
-        payload: { queueItemId: updated.id, settlementId: updated.settlementId },
-      });
+      this.rescheduleCompletion(tx, updated, view);
 
       // GUARDRAIL 4 — disclosure. Shard spending is logged permanently and the
       // 30-day rolling total is public on the profile.
@@ -792,6 +1012,40 @@ export class World {
     });
   }
 
+  /**
+   * Re-arm a queue item's completion event after Seize or a shard spend.
+   *
+   * Both of those move `finishesAt` downward, which means the old event is
+   * wrong and a new one must replace it — and it has to be the RIGHT kind, or
+   * a seized training batch would complete as a building.
+   */
+  private rescheduleCompletion(tx: Tx, item: QueueItem, view: SettlementView): void {
+    const kind = item.kind === 'training' ? 'TRAINING_COMPLETE'
+      : item.kind === 'research' ? 'RESEARCH_COMPLETE'
+        : 'BUILD_COMPLETE';
+    const base = { queueItemId: item.id, settlementId: item.settlementId };
+    const payload =
+      kind === 'TRAINING_COMPLETE'
+        ? {
+            ...base,
+            unitKey: item.targetKey,
+            quantity: item.quantity,
+            formationName:
+              tx.formations.find((f) => f.settlementId === item.settlementId && f.unitKey === item.targetKey)?.name ??
+              defaultFormationName(unitDef(item.targetKey), 0),
+          }
+        : kind === 'RESEARCH_COMPLETE'
+          ? { ...base, playerId: view.settlement.ownerId, researchKey: item.targetKey }
+          : base;
+
+    this.scheduler.schedule(tx, {
+      shardId: view.settlement.shardId,
+      executeAt: item.finishesAt,
+      kind,
+      payload,
+    });
+  }
+
   // ==========================================================================
   // Event handlers
   // ==========================================================================
@@ -800,6 +1054,7 @@ export class World {
     this.scheduler
       .on('BUILD_COMPLETE', (tx, e, now) => this.onBuildComplete(tx, e, now))
       .on('TRAINING_COMPLETE', (tx, e, now) => this.onTrainingComplete(tx, e, now))
+      .on('RESEARCH_COMPLETE', (tx, e, now) => this.onResearchComplete(tx, e, now))
       .on('MOVEMENT_ARRIVE', (tx, e, now) => this.onMovementArrive(tx, e, now))
       .on('HEAVENS_ENVY_RESOLVE', (tx, e, now) => this.onEnvyResolve(tx, e, now));
   }
@@ -858,9 +1113,10 @@ export class World {
   }
 
   private onTrainingComplete(tx: Tx, e: ScheduledEvent, now: Millis): void {
-    const { settlementId, unitKey, quantity, formationName } = e.payload as {
-      settlementId: string; unitKey: string; quantity: number; formationName: string;
+    const { settlementId, unitKey, quantity, formationName, queueItemId } = e.payload as {
+      settlementId: string; unitKey: string; quantity: number; formationName: string; queueItemId?: string;
     };
+    if (queueItemId) tx.queue.delete(queueItemId);
     const settlement = tx.settlements.require(settlementId);
     // Units spawn in their production settlement and must physically travel.
     const existing = tx.formations.find((f) => f.settlementId === settlementId && f.unitKey === unitKey && f.name === formationName);
@@ -883,9 +1139,67 @@ export class World {
         createdAt: now,
       });
     }
-    this.emit('queue.completed', `settlement:${settlementId}`, {
-      settlementId, itemId: e.id, kind: 'training', targetKey: unitKey,
+    tx.appendEvent({
+      id: this.ids.next('log', now),
+      worldId: this.worldId,
+      shardId: settlement.shardId,
+      occurredAt: now,
+      kind: 'training.completed',
+      subjectId: settlementId,
+      payload: { unitKey, quantity, formationName },
     });
+
+    this.emit('queue.completed', `settlement:${settlementId}`, {
+      settlementId, itemId: queueItemId ?? e.id, kind: 'training', targetKey: unitKey,
+    });
+  }
+
+  /**
+   * A research level lands.
+   *
+   * The level is written to the PLAYER, not the settlement — research is the
+   * one global progression (spec/04 §3). The settlement only paid for it and
+   * lent a queue slot.
+   */
+  private onResearchComplete(tx: Tx, e: ScheduledEvent, now: Millis): void {
+    const { queueItemId, settlementId, playerId, researchKey } = e.payload as {
+      queueItemId: string; settlementId: string; playerId: string; researchKey: string;
+    };
+    const item = tx.queue.get(queueItemId);
+    if (!item) return; // cancelled before it landed
+    tx.queue.delete(queueItemId);
+
+    const existing = tx.research.get(playerId, researchKey);
+    const level = (existing?.level ?? 0) + 1;
+    tx.research.put({ playerId, researchKey, level });
+
+    const settlement = tx.settlements.require(settlementId);
+    const grade = gradeForLevel(level);
+    const brokeThrough = grade > gradeForLevel(level - 1);
+
+    tx.appendEvent({
+      id: this.ids.next('log', now),
+      worldId: this.worldId,
+      shardId: settlement.shardId,
+      occurredAt: now,
+      kind: brokeThrough ? 'research.breakthrough' : 'research.completed',
+      actorId: playerId,
+      subjectId: settlementId,
+      payload: { researchKey, level, grade },
+    });
+
+    this.emit('queue.completed', `settlement:${settlementId}`, {
+      settlementId, itemId: queueItemId, kind: 'research', targetKey: researchKey, newLevel: level,
+    });
+
+    // A grade breakthrough is what unlocks content — fork choices, unit-grade
+    // gates, edicts — so it is worth telling the player about specifically.
+    if (brokeThrough) {
+      this.emit('queue.completed', `player:${playerId}`, {
+        settlementId, itemId: queueItemId, kind: 'research-breakthrough',
+        targetKey: researchKey, newLevel: level,
+      });
+    }
   }
 
   /**
@@ -945,8 +1259,18 @@ export class World {
       settlementName: target.name,
       layer: target.layer,
       mission: m.mission,
-      attacker: sideInput(attackerPlayer?.name ?? 'Unknown', attackerPlayer, attackerUnits, this.empireWeightIn(tx, m.ownerId)),
-      defender: sideInput(defenderPlayer?.name ?? 'Neutral', defenderPlayer, defenderUnits, target.ownerId ? this.empireWeightIn(tx, target.ownerId) : 0),
+      attacker: sideInput(
+        attackerPlayer?.name ?? 'Unknown', attackerPlayer, attackerUnits,
+        this.empireWeightIn(tx, m.ownerId),
+        // Research folds into the joint +40% cap with everything else. It does
+        // not get to sit outside it just because it took a long time.
+        attackerPlayer ? techTier(this.researchLevels(tx, m.ownerId), attackerPlayer.era) : 1,
+      ),
+      defender: sideInput(
+        defenderPlayer?.name ?? 'Neutral', defenderPlayer, defenderUnits,
+        target.ownerId ? this.empireWeightIn(tx, target.ownerId) : 0,
+        defenderPlayer && target.ownerId ? techTier(this.researchLevels(tx, target.ownerId), defenderPlayer.era) : 1,
+      ),
       fortification: { wallGrade, flatGarrisonHp: wallGrade * C.GARRISON_HP_PER_WALL_GRADE, concealment: target.terrain.hazards.length * 0.1 },
       plunderable: Object.fromEntries(view.stockpiles.map((s) => [s.resourceKey, s.amount])),
       carryCapacity: BigInt(attackerUnits.reduce((n, u) => n + u.count, 0)) * BigInt(C.CARRY_PER_UNIT),
@@ -1160,20 +1484,109 @@ export class World {
     return adminUpkeep(tx.settlements.where((s) => s.ownerId === playerId).map((s) => holdingRef(s.holdingType).adminCost));
   }
 
+  /** A player's research levels, as the flat map the sim modules want. */
+  researchLevelsOf(playerId: Uuid): ResearchLevels {
+    return this.store.read((tx) => this.researchLevels(tx, playerId));
+  }
+
+  private researchLevels(tx: Tx, playerId: Uuid): ResearchLevels {
+    const out: Record<string, number> = {};
+    for (const r of tx.research.where((x) => x.playerId === playerId)) out[r.researchKey] = r.level;
+    return out;
+  }
+
+  private trainingContext(tx: Tx, playerId: Uuid, settlementId: Uuid): TrainingContext {
+    const player = tx.players.require(playerId);
+    return {
+      view: this.viewIn(tx, settlementId),
+      playerEra: player.era,
+      research: this.researchLevels(tx, playerId),
+      warfareRank: tx.proficiencies.get(playerId, 'warfare')?.rank ?? 0,
+      cultivationGrade: player.cultivationGrade,
+    };
+  }
+
+  /**
+   * Everything this settlement could start right now, costed by the server.
+   *
+   * The client displays these; it never computes one. A cost or a gate the
+   * client worked out for itself is a cost or a gate that can disagree with
+   * the server (invariant §2.1).
+   */
+  options(playerId: Uuid, settlementId: Uuid): Options {
+    return this.store.read((tx) => {
+      const view = this.viewIn(tx, settlementId);
+      const player = tx.players.require(playerId);
+      const levels = this.researchLevels(tx, playerId);
+      const hq = hqLevel(view);
+      const hasKnowledge = view.buildings.some((b) => buildingRef(b.buildingKey).category === 'Knowledge');
+      const bestKnowledge = Math.max(
+        0,
+        ...view.buildings.filter((b) => buildingRef(b.buildingKey).category === 'Knowledge').map((b) => b.level),
+        0,
+      );
+      const ctx = this.trainingContext(tx, playerId, settlementId);
+
+      return {
+        buildings: buildingsForEra(player.era).map((r) => {
+          const existing = view.buildings.find((b) => b.buildingKey === r.key);
+          const cost = upgradeCost(r.key, existing?.level ?? 0, hqFactorFor(hq), 1, C.PLAYER_TIME_MULT);
+          return {
+            key: r.key, name: r.name, category: r.category,
+            currentLevel: existing?.level ?? 0,
+            cost: cost.resources, timeMs: cost.totalTimeMs,
+          };
+        }),
+        training: trainableHere(ctx).map((t) => ({
+          unitKey: t.unit.unitKey, name: t.unit.name, role: t.unit.role, grade: t.unit.grade,
+          allowed: t.allowed, reason: t.reason,
+          cost: t.cost.resources, timeMs: t.cost.perUnitMs,
+        })),
+        research: disciplinesForEra(player.era).map((r) => {
+          const level = levelOf(levels, r.key);
+          const check = validateResearchEnqueue(r.key, {
+            levels, playerEra: player.era, cultivationGrade: player.cultivationGrade,
+            hasKnowledgeBuilding: hasKnowledge,
+          });
+          const cost = researchCost(r.key, level, knowledgeFactorFor(bestKnowledge), C.PLAYER_TIME_MULT);
+          return {
+            key: r.key, name: r.name, era: r.era, branch: r.branch,
+            level, grade: gradeForLevel(level),
+            allowed: check.ok, reason: check.ok ? undefined : check.detail,
+            cost: cost.resources, timeMs: cost.totalTimeMs,
+          };
+        }),
+      };
+    });
+  }
+
+  /** The aggregate effect of a player's research, as the UI shows it. */
+  researchEffectsOf(playerId: Uuid): ReturnType<typeof researchEffects> {
+    return this.store.read((tx) =>
+      researchEffects(this.researchLevels(tx, playerId), tx.players.require(playerId).era),
+    );
+  }
+
   /** Force accrual now, for a settlement the caller is about to read. */
   refresh(settlementId: Uuid): void {
     this.store.transaction((tx) => this.settleAccrual(tx, this.viewIn(tx, settlementId)));
   }
 }
 
-function sideInput(name: string, player: Player | undefined, units: CombatUnit[], empireWeight: number): SideInput {
+function sideInput(
+  name: string,
+  player: Player | undefined,
+  units: CombatUnit[],
+  empireWeight: number,
+  techTierValue = 1,
+): SideInput {
   return {
     playerId: player?.id,
     playerName: name,
     empireWeight,
     era: player?.era ?? 1,
     units,
-    techTier: 1,
+    techTier: techTierValue,
     doctrineMod: 1,
     commanderMod: 1,
     envyScopes: player?.envyScopes.length ?? 0,

@@ -15,6 +15,7 @@ import { Attention } from './screens/Attention.js';
 import { Settlement } from './screens/Settlement.js';
 import { Command } from './screens/Command.js';
 import { Formations } from './screens/Formations.js';
+import { Research } from './screens/Research.js';
 import { BattleReport } from './screens/BattleReport.js';
 import { Simulator } from './screens/Simulator.js';
 import { Codex } from './screens/Codex.js';
@@ -27,6 +28,7 @@ const TABS = [
   { id: 'settlement', glyph: '⌂', label: 'Holding' },
   { id: 'command', glyph: '⚔', label: 'Command' },
   { id: 'formations', glyph: '⚑', label: 'Forces' },
+  { id: 'research', glyph: '⚙', label: 'Research' },
   { id: 'battle', glyph: '⛏', label: 'Reports' },
   { id: 'simulator', glyph: '≈', label: 'Sim' },
   { id: 'codex', glyph: '☷', label: 'Codex' },
@@ -128,6 +130,7 @@ export function App(): JSX.Element {
         {screen === 'settlement' && <Settlement />}
         {screen === 'command' && <Command />}
         {screen === 'formations' && <Formations />}
+        {screen === 'research' && <Research />}
         {screen === 'battle' && <BattleReport />}
         {screen === 'simulator' && <Simulator />}
         {screen === 'codex' && <Codex />}

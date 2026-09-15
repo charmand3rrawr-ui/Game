@@ -12,7 +12,7 @@ balance owner to confirm or correct.
 Correcting one means adding the real value to the appropriate workbook sheet and
 changing its reader in the importer from `C.assumed(...)` to `C.fromWorkbook(...)`.
 
-## 33 open assumptions
+## 38 open assumptions
 
 | Constant | Assumed value | Why it is not in the workbook | Reasoning for the value |
 |---|---|---|---|
@@ -34,6 +34,11 @@ changing its reader in the importer from `C.assumed(...)` to `C.fromWorkbook(...
 | `CAPTURED_LOYALTY` | 15 | spec/04 §9 says a settlement flips "with low loyalty" without a number | Loyalty a freshly captured settlement starts at. Low enough to invite counter-conquest, which is the point: taking ground is meant to be easier than holding it. |
 | `STARTING_MUNITIONS` | 1000000 | spec/03 §5 phase 6 requires a munitions pool without a starting size | Munitions a force carries into an engagement before resupply. |
 | `ENVY_MIN_SPEND_FLOOR` | 24 | spec/04 §11 sets the floor at "the median player’s 30-day earned shard income", which is a live telemetry value | Minimum purchased shard-hours to appear on a Heaven’s Envy leaderboard, so a quiet scope returns fewer than ten names rather than marking a trivial spender. Replace with the live median at launch. |
+| `RESEARCH_COST_PER_LEVEL` | 120 | Research_Disciplines gives levels, grades and effects but no per-level resource cost | Base resource cost of a research level, riding the same (L+1)^2.4 curve as buildings so the two progressions stay comparable. Research is player-level and global, but it is PAID from the settlement that hosts it, which keeps isolation intact. |
+| `TRAIN_COST_PER_UPKEEP` | 35 | Units_Master carries upkeep and training time but no resource cost per unit | Resource cost to train one unit, per point of its upkeep. Upkeep already encodes era, archetype and grade, so cost stays correct automatically as the roster is rebalanced — the same reasoning that makes upkeep the base of Unit Power Value. |
+| `MILITARY_QUEUE_SLOTS` | 2 | Category_Chassis!Military says military buildings grant unit queue slots without a number | Training slots a settlement gets from its military buildings, separate from build slots so a settlement is not forced to choose between growing and defending itself. |
+| `TRAIN_BATCH_MAX` | 5000 | no published batch limit on a training order | Largest single training order, so one command cannot queue a year of production and make the attention dashboard useless. |
+| `TRAIN_SPEED_PER_GRADE` | 0.03 | Category_Chassis!Military says military buildings reduce train time, capped at -40%, without a rate | Training time saved per grade of the best military building, so raising a Barracks is worth doing without letting one settlement out-produce a continent. |
 | `CULTURE_PRESSURE_K` | 0.0004 | GDD §8.4 gives the shape ((cultureDelta)^2 * k, capped) but not k | Calibrated so a 100-point culture lead flips an adjacent plot over roughly three weeks, matching spec/04 §3 ("flip adjacent low-culture plots over weeks"). |
 | `CULTURE_PRESSURE_CAP` | 12 | GDD §8.4 states the cap exists but not its value | Caps a runaway culture lead at roughly one plot flip per day. |
 | `ATTRITION_ESCALATION` | 0.5 | spec/03 §4 says attrition escalates but does not give the rate | Each further hour out of supply adds 50% of the base 3% rate, so a stranded army becomes a problem to solve rather than a leak to tolerate. |
@@ -52,7 +57,7 @@ changing its reader in the importer from `C.assumed(...)` to `C.fromWorkbook(...
 
 ## What is NOT assumed
 
-19 constants are read directly from workbook cells,
+21 constants are read directly from workbook cells,
 48 are fixed by the specification text, and
 6 are computed from the others so they cannot drift.
 The constants naming the six calibration anchors and the core formula shapes can

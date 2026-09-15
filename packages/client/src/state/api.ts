@@ -80,7 +80,7 @@ export interface AvailableBuilding extends BuildingRef {
 }
 
 export interface QueueItemDto {
-  id: string; settlementId: string; kind: string; targetKey: string; targetLevel?: number;
+  id: string; settlementId: string; kind: string; targetKey: string; targetLevel?: number; quantity?: number;
   slotKind: 'personal' | 'governor'; startedAt: string; finishesAt: string;
   timeMultiplier: number; shardHoursSpent: number; position: number;
 }
@@ -96,6 +96,20 @@ export interface FormationDto {
   defTier: number; defLevel: number; defXp: string;
   deeds: string[];
   def: { name: string; role: string; era: number; grade: string; path: string; atk: number; def: number; hp: number; speed: number; upkeep: number } | null;
+}
+
+/** Everything a settlement could start, as the server costed it. */
+export interface OptionsDto {
+  buildings: { key: string; name: string; category: string; currentLevel: number; cost: Record<string, string>; timeMs: string }[];
+  training: { unitKey: string; name: string; role: string; grade: string; allowed: boolean; reason?: string; cost: Record<string, string>; timeMs: string }[];
+  research: { key: string; name: string; era: number; branch: string; level: number; grade: number; allowed: boolean; reason?: string; cost: Record<string, string>; timeMs: string }[];
+}
+
+export interface ResearchDto {
+  levels: Record<string, number>;
+  effects: { output: number; unitEffectiveness: number; governance: number };
+  disciplines: { key: string; name: string; era: number; branch: string; perLevel: string; perLevelPct: number; prerequisite: string; level: number }[];
+  inProgress: { researchKey: string; settlementId: string; finishesAt: string }[];
 }
 
 export interface MovementDto {
@@ -133,9 +147,13 @@ export interface Api {
   map(): Promise<MapResponse>;
   formations(): Promise<{ formations: FormationDto[] }>;
   movements(): Promise<{ movements: MovementDto[]; serverTime: number }>;
+  options(settlementId: string): Promise<OptionsDto>;
+  research(): Promise<ResearchDto>;
   battles(settlementId: string): Promise<{ battles: Battle[] }>;
   battle(id: string): Promise<Battle>;
   enqueue(settlementId: string, targetKey: string, slotKind: 'personal' | 'governor'): Promise<QueueItemDto>;
+  train(settlementId: string, unitKey: string, quantity: number, slotKind: 'personal' | 'governor'): Promise<QueueItemDto>;
+  startResearch(settlementId: string, researchKey: string, slotKind: 'personal' | 'governor'): Promise<QueueItemDto>;
   cancel(itemId: string): Promise<{ refunded: Record<string, string> }>;
   seize(itemId: string): Promise<QueueItemDto>;
   spendShards(itemId: string, shardHours: number): Promise<QueueItemDto>;
@@ -153,12 +171,24 @@ const remoteApi: Api = {
   map: () => call('/map'),
   formations: () => call('/formations'),
   movements: () => call('/movements'),
+  options: (settlementId) => call(`/settlements/${settlementId}/options`),
+  research: () => call('/research'),
   battles: (settlementId) => call(`/settlements/${settlementId}/battles`),
   battle: (id) => call(`/battles/${id}`),
   enqueue: (settlementId, targetKey, slotKind) =>
     call(`/settlements/${settlementId}/queue`, {
       method: 'POST',
       body: JSON.stringify({ commandId: newCommandId(), kind: 'building', targetKey, slotKind }),
+    }),
+  train: (settlementId, targetKey, quantity, slotKind) =>
+    call(`/settlements/${settlementId}/queue`, {
+      method: 'POST',
+      body: JSON.stringify({ commandId: newCommandId(), kind: 'training', targetKey, quantity, slotKind }),
+    }),
+  startResearch: (settlementId, targetKey, slotKind) =>
+    call(`/settlements/${settlementId}/queue`, {
+      method: 'POST',
+      body: JSON.stringify({ commandId: newCommandId(), kind: 'research', targetKey, slotKind }),
     }),
   cancel: (itemId) => call(`/queue/${itemId}`, { method: 'DELETE', body: JSON.stringify({ commandId: newCommandId() }) }),
   seize: (itemId) => call(`/queue/${itemId}/seize`, { method: 'POST', body: JSON.stringify({ commandId: newCommandId() }) }),

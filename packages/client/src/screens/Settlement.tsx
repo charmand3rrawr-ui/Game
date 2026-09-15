@@ -15,11 +15,13 @@ import { useMemo, useState } from 'react';
 import { useStore } from '../state/store.js';
 import { api, type AvailableBuilding } from '../state/api.js';
 import { Big, Bar, Countdown, Empty, LevelBadge, Num, Pill, duration } from '../ui/bits.js';
+import { Train } from './Train.js';
 
 export function Settlement(): JSX.Element {
   const { settlement, me, run, busy, go } = useStore();
   const [category, setCategory] = useState('all');
   const [search, setSearch] = useState('');
+  const [pane, setPane] = useState<'build' | 'train'>('build');
 
   // EVERY hook runs before any early return. The fogged and empty states below
   // return different trees, and a hook called after one of them would change
@@ -146,10 +148,12 @@ export function Settlement(): JSX.Element {
           <div key={q.id} className="att u-normal">
             <div className="glyph" aria-hidden="true">{q.slotKind === 'governor' ? '⚑' : '▸'}</div>
             <div>
-              <div className="kindlabel">{q.slotKind} &middot; {q.timeMultiplier}&times; time</div>
+              <div className="kindlabel">{q.kind} &middot; {q.slotKind} &middot; {q.timeMultiplier}&times; time</div>
               <div className="title">
-                {s.available.find((a) => a.key === q.targetKey)?.name ?? q.targetKey}
-                {q.targetLevel !== undefined && <> &rarr; level {q.targetLevel}</>}
+                {q.kind === 'training'
+                  ? `${q.quantity ?? 1} \u00d7 ${q.targetKey.split('|')[1] ?? q.targetKey}`
+                  : s.available.find((a) => a.key === q.targetKey)?.name ?? q.targetKey.replace(/_/g, ' ')}
+                {q.kind !== 'training' && q.targetLevel !== undefined && <> &rarr; level {q.targetLevel}</>}
               </div>
               <div className="detail">
                 {q.shardHoursSpent > 0
@@ -218,7 +222,19 @@ export function Settlement(): JSX.Element {
         </table>
       </div>
 
-      <h2>Build</h2>
+      <h2>Make something</h2>
+      <div className="row wrap" style={{ gap: 6, marginBottom: 10 }}>
+        {/* data-pane is a stable hook for the browser smoke test: "Build" and
+            "Train" also appear on the action buttons below, and a test that
+            picks by label alone silently clicks the wrong one. */}
+        <button data-pane="build" className={`small ${pane === 'build' ? 'primary' : 'ghost'}`} onClick={() => setPane('build')}>Build</button>
+        <button data-pane="train" className={`small ${pane === 'train' ? 'primary' : 'ghost'}`} onClick={() => setPane('train')}>Train</button>
+      </div>
+
+      {pane === 'train' && <Train settlementId={s.settlement.id} />}
+
+      {pane === 'build' && (
+      <>
       <div className="card">
         <div className="row wrap" style={{ gap: 8 }}>
           <label className="sr" htmlFor="cat">Category</label>
@@ -236,6 +252,8 @@ export function Settlement(): JSX.Element {
           <BuildCard key={b.key} b={b} plotsFree={plotsFree} hqLevel={s.hqLevel} settlementId={s.settlement.id} />
         ))}
       </div>
+      </>
+      )}
     </div>
   );
 }
@@ -276,6 +294,7 @@ function BuildCard({ b, plotsFree, hqLevel, settlementId }: {
       </dl>
 
       <button
+        data-action="build"
         className="primary"
         style={{ width: '100%', marginTop: 10 }}
         disabled={busy || blockedByPlots || blockedByHq}

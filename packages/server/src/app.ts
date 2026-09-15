@@ -23,6 +23,7 @@ import {
   BUILDINGS,
   HOLDINGS,
   VETERANCY_TIERS,
+  RESEARCH,
   ROSTER,
   clientMessageSchema,
   dispatchSchema,
@@ -250,6 +251,43 @@ export async function buildApp(opts: AppOptions = {}): Promise<App> {
           .map((m) => ({ ...m, cargo: undefined })),
       ),
       void: req.query.bbox,
+    });
+  });
+
+  /**
+   * Everything this settlement could start, costed and gated by the server.
+   *
+   * The client renders these; it never works one out. A cost the client
+   * computed is a cost that can disagree with the server (invariant §2.1).
+   */
+  fastify.get<{ Params: { id: string } }>('/v1/settlements/:id/options', async (req, reply) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const settlement = world.store.read((tx) => tx.settlements.get(req.params.id));
+    if (!settlement) return reply.status(404).type('application/problem+json').send(problem('not-found', 'No such settlement', 404));
+    if (settlement.ownerId !== playerId) {
+      return reply.status(403).type('application/problem+json').send(problem('not-owner', 'Not yours', 403));
+    }
+    return wire(world.options(playerId, req.params.id));
+  });
+
+  /** Research is player-level, so it is read from the player, not a holding. */
+  fastify.get('/v1/research', async (req) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const levels = world.researchLevelsOf(playerId);
+    return wire({
+      levels,
+      effects: world.researchEffectsOf(playerId),
+      disciplines: RESEARCH.map((r) => ({
+        key: r.key, name: r.name, era: r.era, branch: r.branch,
+        perLevel: r.perLevel, perLevelPct: r.perLevelPct, prerequisite: r.prerequisite,
+        level: levels[r.key] ?? 0,
+      })),
+      // Where research is currently being worked, since it is paid locally.
+      inProgress: world.store.read((tx) =>
+        tx.queue
+          .where((q) => q.kind === 'research' && tx.settlements.get(q.settlementId)?.ownerId === playerId)
+          .map((q) => ({ researchKey: q.targetKey, settlementId: q.settlementId, finishesAt: q.finishesAt })),
+      ),
     });
   });
 

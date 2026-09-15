@@ -23,7 +23,30 @@ const PORT = 4173;
 const SITE = `http://127.0.0.1:${PORT}/`;
 const OUT = new URL('./smoke-output/', import.meta.url).pathname;
 
-const TABS = ['Attention', 'Map', 'Holding', 'Command', 'Forces', 'Reports', 'Sim', 'Codex'];
+const TABS = ['Attention', 'Map', 'Holding', 'Command', 'Forces', 'Research', 'Reports', 'Sim', 'Codex'];
+
+/**
+ * Click something in the page body.
+ *
+ * NOT a force-click. The tab bar is fixed to the bottom of the viewport, so a
+ * forced click on an element that happens to sit under it is delivered to the
+ * tab bar instead and silently does nothing — which is how three checks passed
+ * a broken build for one run. Scrolling into view first and letting Playwright
+ * do its actionability checks is the difference between testing the app and
+ * testing the test.
+ */
+async function clickIn(locator) {
+  await locator.scrollIntoViewIfNeeded();
+  await locator.click({ timeout: 8000 });
+}
+
+/** First enabled match, or null. */
+async function firstEnabled(locator) {
+  for (let i = 0, n = await locator.count(); i < n; i++) {
+    if (await locator.nth(i).isEnabled()) return locator.nth(i);
+  }
+  return null;
+}
 
 const failures = [];
 function check(name, ok, detail) {
@@ -83,28 +106,21 @@ async function main() {
     // --- BUILD -----------------------------------------------------------
     await tab(TABS.indexOf('Holding'));
     await page.waitForTimeout(800);
-    const builds = page.locator('button:has-text("Build"), button:has-text("Raise to")');
-    let queued = false;
-    for (let i = 0, n = await builds.count(); i < n; i++) {
-      if (await builds.nth(i).isEnabled()) {
-        await builds.nth(i).click({ force: true });
-        queued = true;
-        break;
-      }
-    }
+    await clickIn(page.locator('[data-pane="build"]'));
+    await page.waitForTimeout(500);
+    const build = await firstEnabled(page.locator('[data-action="build"]'));
+    if (build) await clickIn(build);
     await page.waitForTimeout(1500);
-    check('a building can be queued', queued && (await page.locator('.toast.ok').count()) > 0);
+    check('a building can be queued', Boolean(build) && (await page.locator('.toast.ok').count()) > 0);
 
     // --- a rejection explains itself -------------------------------------
     // The second build has nowhere to go: one personal slot, now busy. The
     // player must be told WHY, specifically.
     let rejection = null;
     for (let i = 0; i < 10 && !rejection; i++) {
-      const b = page.locator('button:has-text("Build"), button:has-text("Raise to")');
-      for (let j = 0, n = await b.count(); j < n; j++) {
-        if (await b.nth(j).isEnabled()) { await b.nth(j).click({ force: true }); break; }
-      }
-      await page.waitForTimeout(400);
+      const next = await firstEnabled(page.locator('[data-action="build"]'));
+      if (next) await clickIn(next);
+      await page.waitForTimeout(500);
       rejection = await page.locator('.toast.error .d').first().textContent().catch(() => null);
     }
     check('a rejection explains itself', Boolean(rejection) && rejection.length > 30, rejection ?? 'no rejection shown');
@@ -113,11 +129,11 @@ async function main() {
     await tab(TABS.indexOf('Command'));
     await page.waitForTimeout(800);
     const all = page.locator('button:has-text("all")').first();
-    if (await all.count()) await all.click({ force: true });
+    if (await all.count()) await clickIn(all);
     await page.waitForTimeout(400);
     const send = page.locator('button:has-text("Send")').first();
     const canSend = await send.isEnabled().catch(() => false);
-    if (canSend) await send.click({ force: true });
+    if (canSend) await clickIn(send);
     await page.waitForTimeout(1800);
     const dispatched = (await page.locator('.toast').allTextContents()).some((t) => /Dispatched/i.test(t));
     check('a force can be dispatched', dispatched);
@@ -125,6 +141,34 @@ async function main() {
     const movement = await page.locator('.att:has-text("ATTACK")').first().textContent().catch(() => '');
     check('the movement shows an exact arrival', /\d+[hdm]/.test(movement), movement.slice(0, 80));
     await page.screenshot({ path: `${OUT}/20-dispatched.png` });
+
+    // --- TRAIN -----------------------------------------------------------
+    // spec/08 M7's loop is "build, TRAIN, dispatch, resolve, read the report".
+    // Training was missing from the first pass at M3 and nothing caught it,
+    // which is exactly why it is checked here now.
+    await tab(TABS.indexOf('Holding'));
+    await page.waitForTimeout(800);
+    await clickIn(page.locator('[data-pane="train"]'));
+    await page.waitForTimeout(1200);
+    const trainButton = await firstEnabled(page.locator('[data-action="train"]'));
+    const canTrain = Boolean(trainButton);
+    if (trainButton) await clickIn(trainButton);
+    await page.waitForTimeout(1600);
+    const trained = (await page.locator('.toast').allTextContents()).some((t) => /Training \d+/i.test(t));
+    check('units can be trained', canTrain && trained);
+    await page.screenshot({ path: `${OUT}/21-training.png` });
+
+    // --- RESEARCH ---------------------------------------------------------
+    await tab(TABS.indexOf('Research'));
+    await page.waitForTimeout(1000);
+    const raise = await firstEnabled(page.locator('button:has-text("Raise to level")'));
+    const canResearch = Boolean(raise);
+    if (raise) await clickIn(raise);
+    await page.waitForTimeout(1600);
+    check('a discipline can be raised', canResearch);
+    const effects = await page.locator('.card .num').first().textContent().catch(() => '');
+    check('research effects are shown', /\u00d7\d/.test(effects ?? ''), effects ?? '');
+    await page.screenshot({ path: `${OUT}/22-research.png` });
 
     // --- the simulator runs the real resolver ----------------------------
     await tab(TABS.indexOf('Sim'));

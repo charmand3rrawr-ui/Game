@@ -134,12 +134,22 @@ interface RefArchetype {
   upkeep: number;
   baseTrainHours: number;
 }
-interface RefUnitGrade { grade: string; statMult: number; upkeepMult: number; trainMult: number; unlock: string }
+interface RefUnitGrade {
+  grade: string; statMult: number; upkeepMult: number; trainMult: number; unlock: string;
+  /** Minimum research discipline grade, parsed from the Unlock column. */
+  requiresDisciplineGrade: number;
+  /** Minimum Warfare proficiency rank, where the Unlock column names one. */
+  requiresWarfareRank: number;
+}
 interface RefUnitPath { path: string; atkMod: number; defMod: number; hpMod: number; speedMod: number; identity: string }
 interface RefVeterancyTier { tier: number; name: string; cumulativeLevels: number; totalStatBonus: number; tierUpCost: string; reputation: string }
 interface RefGrade { grade: number; realmStage: string; minLevel: number; maxLevel: number; qiCost: string; tribulation: string }
 interface RefHolding { key: string; name: string; era: string; layer: string; plotsAtFounding: number; maxPlots: number; adminCost: number; produces: string; notes: string }
-interface RefResearch { key: string; name: string; era: number; branch: string; perLevel: string; prerequisite: string }
+interface RefResearch {
+  key: string; name: string; era: number; branch: string; perLevel: string; prerequisite: string;
+  /** The per-level effect as a fraction, parsed from "+0.3% ... / level". */
+  perLevelPct: number;
+}
 interface RefEquipment { key: string; name: string; slot: string; tier: number; quality: string; bonusPct: number; costMult: number | null; source: string }
 interface RefCelestial { name: string; a: string; b: string; c: string }
 interface RefChassis { category: string; outputFormula: string; mechanics: string; scaling: string; vulnerability: string }
@@ -413,6 +423,58 @@ async function main(): Promise<void> {
       'returns fewer than ten names rather than marking a trivial spender. Replace with the live median at launch.',
   );
 
+  // ------------------------------------------------- research and training
+  const RESEARCH_ERA_PREREQ_GRADE = C.fromWorkbook(
+    'RESEARCH_ERA_PREREQ_GRADE',
+    { value: 12, ref: 'Research_Disciplines!Prerequisite "All Era N-1 disciplines at Grade 12+"' },
+    'An era\u2019s disciplines require every previous-era discipline at this grade.',
+    [1, 42],
+  );
+  const RESEARCH_COST_PER_LEVEL = C.assumed(
+    'RESEARCH_COST_PER_LEVEL',
+    120,
+    'Research_Disciplines gives levels, grades and effects but no per-level resource cost',
+    'Base resource cost of a research level, riding the same (L+1)^2.4 curve as buildings so the ' +
+      'two progressions stay comparable. Research is player-level and global, but it is PAID from ' +
+      'the settlement that hosts it, which keeps isolation intact.',
+  );
+  const TRAIN_COST_PER_UPKEEP = C.assumed(
+    'TRAIN_COST_PER_UPKEEP',
+    35,
+    'Units_Master carries upkeep and training time but no resource cost per unit',
+    'Resource cost to train one unit, per point of its upkeep. Upkeep already encodes era, ' +
+      'archetype and grade, so cost stays correct automatically as the roster is rebalanced \u2014 ' +
+      'the same reasoning that makes upkeep the base of Unit Power Value.',
+  );
+  const MILITARY_QUEUE_SLOTS = C.assumed(
+    'MILITARY_QUEUE_SLOTS',
+    2,
+    'Category_Chassis!Military says military buildings grant unit queue slots without a number',
+    'Training slots a settlement gets from its military buildings, separate from build slots so a ' +
+      'settlement is not forced to choose between growing and defending itself.',
+  );
+  const TRAIN_BATCH_MAX = C.assumed(
+    'TRAIN_BATCH_MAX',
+    5_000,
+    'no published batch limit on a training order',
+    'Largest single training order, so one command cannot queue a year of production and make the ' +
+      'attention dashboard useless.',
+  );
+
+  const TRAIN_SPEED_PER_GRADE = C.assumed(
+    'TRAIN_SPEED_PER_GRADE',
+    0.03,
+    'Category_Chassis!Military says military buildings reduce train time, capped at -40%, without a rate',
+    'Training time saved per grade of the best military building, so raising a Barracks is worth ' +
+      'doing without letting one settlement out-produce a continent.',
+  );
+  const TRAIN_SPEED_CAP = C.fromWorkbook(
+    'TRAIN_SPEED_CAP',
+    { value: 0.4, ref: 'Category_Chassis!Military "-train time (capped -40%)"' },
+    'Ceiling on training-time reduction from facilities.',
+    [0, 1],
+  );
+
   // -------------------------------------------------------------- governors
   const GOVERNOR_TIME_MULT = C.fromSpec('GOVERNOR_TIME_MULT', 2.0, 'spec/04 §6 · the 2x rule', 'Anything a governor initiates takes twice as long. That field is the whole mechanic.', [1, 10]);
   const PLAYER_TIME_MULT = C.fromSpec('PLAYER_TIME_MULT', 1.0, 'spec/04 §6', '', [0.1, 2]);
@@ -675,14 +737,32 @@ function readUnitGrades(s: Sheet): RefUnitGrade[] {
     tr: s.headerIndex(h, 'Train Time Mult'),
     un: s.headerIndex(h, 'Unlock'),
   };
-  const out = s.dataRows(h).map((r) => ({
-    grade: String(r[idx.g]),
-    statMult: numOrDie(r[idx.stat], 'grade stat mult'),
-    upkeepMult: numOrDie(r[idx.up], 'grade upkeep mult'),
-    trainMult: numOrDie(r[idx.tr], 'grade train mult'),
-    unlock: String(r[idx.un] ?? ''),
-  }));
+  const out = s.dataRows(h).map((r) => {
+    const unlock = String(r[idx.un] ?? '');
+    return {
+      grade: String(r[idx.g]),
+      statMult: numOrDie(r[idx.stat], 'grade stat mult'),
+      upkeepMult: numOrDie(r[idx.up], 'grade upkeep mult'),
+      trainMult: numOrDie(r[idx.tr], 'grade train mult'),
+      unlock,
+      // The Unlock column is prose, but it is the ONLY place these gates are
+      // written down ("Grade >= 12 + Warfare rank 5"). Parsing it keeps the
+      // gates tied to the workbook instead of being retyped into game logic,
+      // and the assertion below fails the build if the wording ever drifts
+      // into something this cannot read.
+      requiresDisciplineGrade: parseGate(unlock, /(?:Discipline grade|Grade)\s*[>=\u2265]+\s*(\d+)/),
+      requiresWarfareRank: parseGate(unlock, /Warfare rank\s*(\d+)/),
+    };
+  });
   if (out.length !== 6) throw new ImportError(`expected 6 unit grades, got ${out.length}`);
+  // Mortal is the default and gates on nothing; every other grade must gate on
+  // something, or the roster's progression has silently become free.
+  for (const g of out) {
+    if (g.grade === 'Mortal') continue;
+    if (g.requiresDisciplineGrade <= 0) {
+      throw new ImportError(`Unit_Grades: could not read a discipline-grade gate from ${g.grade}'s Unlock text ${JSON.stringify(g.unlock)}`);
+    }
+  }
   return out;
 }
 
@@ -907,13 +987,19 @@ function readResearch(s: Sheet): RefResearch[] {
   for (const r of s.dataRows(h)) {
     if (typeof r[idx.e] !== 'number') continue;
     const name = String(r[idx.d]).trim();
+    const perLevel = String(r[idx.pl] ?? '');
+    const pct = /([\d.]+)\s*%/.exec(perLevel);
+    if (!pct) {
+      throw new ImportError(`Research_Disciplines!${name}: cannot read a per-level percentage from ${JSON.stringify(perLevel)}`);
+    }
     out.push({
       key: slug(name),
       name,
       era: r[idx.e] as number,
       branch: String(r[idx.b] ?? ''),
-      perLevel: String(r[idx.pl] ?? ''),
+      perLevel,
       prerequisite: String(r[idx.pre] ?? ''),
+      perLevelPct: Number(pct[1]) / 100,
     });
   }
   if (out.length !== 21) throw new ImportError(`expected 21 research disciplines (3 branches x 7 eras), got ${out.length}`);
@@ -1327,12 +1413,22 @@ function renderRefData(hash: string, d: Record<string, unknown>): string {
   lines.push(header('refdata.ts', hash));
   lines.push(`export interface RefBuilding { key: string; name: string; era: number; category: string; functionText: string; baseTimber: number; baseStone: number; baseSpecial: number; sizeClass: number; purpose?: string; mechanic?: string; synergies?: string; art?: string }`);
   lines.push(`export interface RefArchetype { key: string; era: number; name: string; role: string; atk: number; def: number; hp: number; speed: number; upkeep: number; baseTrainHours: number }`);
-  lines.push(`export interface RefUnitGrade { grade: string; statMult: number; upkeepMult: number; trainMult: number; unlock: string }`);
+  lines.push(`export interface RefUnitGrade {
+  grade: string; statMult: number; upkeepMult: number; trainMult: number; unlock: string;
+  /** Minimum research discipline grade, parsed from the Unlock column. */
+  requiresDisciplineGrade: number;
+  /** Minimum Warfare proficiency rank, where the Unlock column names one. */
+  requiresWarfareRank: number;
+}`);
   lines.push(`export interface RefUnitPath { path: string; atkMod: number; defMod: number; hpMod: number; speedMod: number; identity: string }`);
   lines.push(`export interface RefVeterancyTier { tier: number; name: string; cumulativeLevels: number; totalStatBonus: number; tierUpCost: string; reputation: string }`);
   lines.push(`export interface RefGrade { grade: number; realmStage: string; minLevel: number; maxLevel: number; qiCost: string; tribulation: string }`);
   lines.push(`export interface RefHolding { key: string; name: string; era: string; layer: string; plotsAtFounding: number; maxPlots: number; adminCost: number; produces: string; notes: string }`);
-  lines.push(`export interface RefResearch { key: string; name: string; era: number; branch: string; perLevel: string; prerequisite: string }`);
+  lines.push(`export interface RefResearch {
+  key: string; name: string; era: number; branch: string; perLevel: string; prerequisite: string;
+  /** The per-level effect as a fraction, parsed from "+0.3% ... / level". */
+  perLevelPct: number;
+}`);
   lines.push(`export interface RefEquipment { key: string; name: string; slot: string; tier: number; quality: string; bonusPct: number; costMult: number | null; source: string }`);
   lines.push(`export interface RefCelestial { name: string; a: string; b: string; c: string }`);
   lines.push(`export interface RefChassis { category: string; outputFormula: string; mechanics: string; scaling: string; vulnerability: string }`);
@@ -1478,6 +1574,12 @@ function approx(what: string, expected: number, actual: number, tol: number): vo
     throw new ImportError(`${what}: workbook says ${expected}, emitted constants give ${actual}`);
   }
 }
+/** Read a numeric gate out of a prose Unlock cell. 0 means "no such gate". */
+function parseGate(text: string, pattern: RegExp): number {
+  const m = pattern.exec(text);
+  return m ? Number(m[1]) : 0;
+}
+
 function findHeaderRow(s: Sheet, firstHeader: string): number {
   for (let r = 0; r < s.rows.length; r++) {
     for (let c = 0; c < (s.rows[r]?.length ?? 0); c++) {

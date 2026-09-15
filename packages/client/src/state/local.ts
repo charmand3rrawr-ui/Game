@@ -29,7 +29,7 @@ import {
   upgradeCost,
   type SeededWorld,
 } from '@ascendance/engine';
-import { BALANCE_REVISION, ASSUMED_CONSTANTS, BUILDINGS, HOLDINGS, ROSTER, VETERANCY_TIERS, tryUnitDef } from '@ascendance/shared';
+import { BALANCE_REVISION, ASSUMED_CONSTANTS, BUILDINGS, HOLDINGS, RESEARCH, ROSTER, VETERANCY_TIERS, tryUnitDef } from '@ascendance/shared';
 import type { Api, ApiProblem, MeResponse, SettlementDetail, MapResponse, FormationDto, MovementDto, QueueItemDto, Meta } from './api.js';
 import { ApiError } from './api.js';
 
@@ -215,6 +215,32 @@ export const localApi: Api = {
     });
   },
 
+  options(settlementId: string) {
+    const { world, playerId } = ensureWorld();
+    return wrap(() => wire(world.options(playerId, settlementId)) as import('./api.js').OptionsDto);
+  },
+
+  research() {
+    const { world, playerId } = ensureWorld();
+    return wrap(() => {
+      const levels = world.researchLevelsOf(playerId);
+      return wire({
+        levels,
+        effects: world.researchEffectsOf(playerId),
+        disciplines: RESEARCH.map((r) => ({
+          key: r.key, name: r.name, era: r.era, branch: r.branch,
+          perLevel: r.perLevel, perLevelPct: r.perLevelPct, prerequisite: r.prerequisite,
+          level: levels[r.key] ?? 0,
+        })),
+        inProgress: world.store.read((tx) =>
+          tx.queue
+            .where((q) => q.kind === 'research' && tx.settlements.get(q.settlementId)?.ownerId === playerId)
+            .map((q) => ({ researchKey: q.targetKey, settlementId: q.settlementId, finishesAt: q.finishesAt })),
+        ),
+      }) as import('./api.js').ResearchDto;
+    });
+  },
+
   battles(settlementId: string) {
     const { world } = ensureWorld();
     return wrap(() => wire({ battles: world.battlesAt(settlementId).slice(0, 25) }) as { battles: import('@ascendance/shared').Battle[] });
@@ -234,6 +260,22 @@ export const localApi: Api = {
     tick();
     return wrap(() => wire(world.enqueue({
       commandId: crypto.randomUUID(), playerId, settlementId, kind: 'building', targetKey, slotKind,
+    })) as QueueItemDto);
+  },
+
+  train(settlementId, targetKey, quantity, slotKind) {
+    const { world, playerId } = ensureWorld();
+    tick();
+    return wrap(() => wire(world.enqueue({
+      commandId: crypto.randomUUID(), playerId, settlementId, kind: 'training', targetKey, quantity, slotKind,
+    })) as QueueItemDto);
+  },
+
+  startResearch(settlementId, targetKey, slotKind) {
+    const { world, playerId } = ensureWorld();
+    tick();
+    return wrap(() => wire(world.enqueue({
+      commandId: crypto.randomUUID(), playerId, settlementId, kind: 'research', targetKey, slotKind,
     })) as QueueItemDto);
   },
 

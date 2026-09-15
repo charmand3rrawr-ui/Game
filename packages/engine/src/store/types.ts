@@ -31,6 +31,7 @@ import type {
   Player,
   Proficiency,
   QueueItem,
+  ResearchLevel,
   ScheduledEvent,
   Settlement,
   Stockpile,
@@ -49,6 +50,7 @@ export interface Tx {
   players: Repo<Player>;
   dynasties: Repo<Dynasty>;
   proficiencies: KeyedRepo<Proficiency>;
+  research: KeyedRepo<ResearchLevel>;
   settlements: Repo<Settlement>;
   buildings: Repo<Building>;
   stockpiles: KeyedRepo<Stockpile>;

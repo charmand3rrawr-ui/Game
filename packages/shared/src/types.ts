@@ -74,6 +74,19 @@ export interface Player {
   createdAt: Millis;
 }
 
+/**
+ * One discipline's level for one player.
+ *
+ * Research is the SINGLE exception to production isolation (invariant §2.4):
+ * the level is global to the player, even though the work is paid for and
+ * queued in one settlement.
+ */
+export interface ResearchLevel {
+  playerId: Uuid;
+  researchKey: string;
+  level: number;
+}
+
 export interface Proficiency {
   playerId: Uuid;
   track: ProficiencyTrack;

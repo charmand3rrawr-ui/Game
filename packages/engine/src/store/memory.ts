@@ -12,7 +12,7 @@
 
 import type {
   Alliance, AllianceMember, Battle, Building, Dynasty, Formation, Governor,
-  LoggedEvent, Movement, Player, Proficiency, QueueItem, ScheduledEvent,
+  LoggedEvent, Movement, Player, Proficiency, QueueItem, ResearchLevel, ScheduledEvent,
   Settlement, Stockpile, Treaty, Uuid, Millis,
 } from '@ascendance/shared';
 import type { Store, Tx, Repo, KeyedRepo } from './types.js';
@@ -54,6 +54,7 @@ interface Tables {
   players: Map<string, Player>;
   dynasties: Map<string, Dynasty>;
   proficiencies: Map<string, Proficiency>;
+  research: Map<string, ResearchLevel>;
   settlements: Map<string, Settlement>;
   buildings: Map<string, Building>;
   stockpiles: Map<string, Stockpile>;
@@ -71,7 +72,7 @@ interface Tables {
 
 function emptyTables(): Tables {
   return {
-    players: new Map(), dynasties: new Map(), proficiencies: new Map(),
+    players: new Map(), dynasties: new Map(), proficiencies: new Map(), research: new Map(),
     settlements: new Map(), buildings: new Map(), stockpiles: new Map(),
     queue: new Map(), formations: new Map(), movements: new Map(),
     battles: new Map(), alliances: new Map(), allianceMembers: new Map(),
@@ -113,7 +114,7 @@ export class MemoryStore implements Store {
     const t = this.tables;
     return {
       players: new Map(t.players), dynasties: new Map(t.dynasties),
-      proficiencies: new Map(t.proficiencies), settlements: new Map(t.settlements),
+      proficiencies: new Map(t.proficiencies), research: new Map(t.research), settlements: new Map(t.settlements),
       buildings: new Map(t.buildings), stockpiles: new Map(t.stockpiles),
       queue: new Map(t.queue), formations: new Map(t.formations),
       movements: new Map(t.movements), battles: new Map(t.battles),
@@ -130,6 +131,7 @@ export class MemoryStore implements Store {
       players: new MapRepo(t.players, 'player'),
       dynasties: new MapRepo(t.dynasties, 'dynasty'),
       proficiencies: new CompositeRepo(t.proficiencies, (p) => [p.playerId, p.track]),
+      research: new CompositeRepo(t.research, (r) => [r.playerId, r.researchKey]),
       settlements: new MapRepo(t.settlements, 'settlement'),
       buildings: new MapRepo(t.buildings, 'building'),
       stockpiles: new CompositeRepo(t.stockpiles, (s) => [s.settlementId, s.resourceKey]),

@@ -48,7 +48,12 @@ const STARTING_BUILDINGS: { key: string; level: number }[] = [
   { key: '1_warehouse', level: 9 },
   { key: '1_grain_pit', level: 6 },
   { key: '1_barracks', level: 5 },
+  { key: '1_archery_range', level: 4 },
   { key: '1_palisade', level: 4 },
+  // Research is player-level but has to be hosted somewhere: without a
+  // Knowledge building a settlement cannot start any of it (spec/04 §3).
+  { key: '1_elder_s_lodge', level: 5 },
+  { key: '1_scout_post', level: 3 },
 ];
 
 const STARTING_RESOURCES: Record<string, bigint> = {
