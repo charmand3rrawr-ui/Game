@@ -21,3 +21,4 @@ export * from './sim/military.js';
 export * from './sim/research.js';
 export * from './sim/cultivation.js';
 export * from './sim/governor.js';
+export * from './sim/social.js';

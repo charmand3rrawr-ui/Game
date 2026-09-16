@@ -12,7 +12,7 @@ balance owner to confirm or correct.
 Correcting one means adding the real value to the appropriate workbook sheet and
 changing its reader in the importer from `C.assumed(...)` to `C.fromWorkbook(...)`.
 
-## 55 open assumptions
+## 57 open assumptions
 
 | Constant | Assumed value | Why it is not in the workbook | Reasoning for the value |
 |---|---|---|---|
@@ -71,11 +71,13 @@ changing its reader in the importer from `C.assumed(...)` to `C.fromWorkbook(...
 | `POSTURE_SALLY_PENALTY` | 0.15 | Governor_Specs describes Sally without giving its modifier | Defence given up by meeting an attacker in the field instead of holding the walls. |
 | `HAUL_FLOOR_PER_DAY` | 5000 | Governor_Specs states stockpile floors in days without defining a day of consumption | Resources one day of a stockpile floor reserves. Until settlement consumption is modelled, a floor in days is read against this. |
 | `HAUL_MIN_CARGO` | 2000 | no published minimum convoy size | Smallest surplus worth dispatching a convoy for. Without it a resource policy produces a trickle of interceptable haulers rather than a supply line. |
+| `MESSAGE_WINDOW_MS` | 3600000 | spec/05 §5 rate-limits commands but says nothing about player-to-player messages | The window the message limit is measured over. One hour is long enough that a real negotiation never touches it and short enough that a mass-mail campaign stalls immediately. |
+| `MESSAGE_WINDOW_LIMIT` | 30 | no published cap on outbound messages | Messages one player may send per window. Sized for an alliance leader coordinating an operation, not for a broadcast: 30 an hour is far past normal conversation and far short of a mailing list. |
 
 ## What is NOT assumed
 
 21 constants are read directly from workbook cells,
-50 are fixed by the specification text, and
+51 are fixed by the specification text, and
 6 are computed from the others so they cannot drift.
 The constants naming the six calibration anchors and the core formula shapes can
 never be assumed — the importer fails the build if one ever is.

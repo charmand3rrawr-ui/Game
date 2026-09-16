@@ -292,6 +292,44 @@ export function experienceFatigue(tier: number, levelInTier: number): number {
  * If median empire weight or conquests-per-week flattens after launch, the knee
  * constant is wrong and must move.
  */
+/**
+ * Advance a player's rolling empire weight toward its live value.
+ *
+ * `empireWeightMultiplier` takes a 30-DAY AVERAGE, and that is not a detail:
+ * `spec/03 §8` says in as many words that "the rolling average is what stops a
+ * player shedding territory before a war to spike progression". Feed it a live
+ * reading instead and the safeguard is gone — drop three provinces, fight the
+ * battle at a lower requirement, take them back tomorrow.
+ *
+ * Rather than keep thirty days of samples, this converges the stored average on
+ * the weight the player ACTUALLY HELD over the elapsed period, in proportion to
+ * how much of the window that period covers. A full window arrives exactly; a
+ * single day moves a thirtieth of the way.
+ *
+ * `heldWeight` is the live figure as at the START of the period, not now — and
+ * that distinction is the whole safeguard. Live weight is piecewise-constant
+ * between ownership changes, so the value that held for the last stretch is the
+ * one that stretch should be averaged at. Passing the CURRENT figure instead
+ * makes the average collapse onto it the moment a month has passed since the
+ * last sample, which hands the dodge straight back: shed the provinces, read a
+ * low average immediately, fight cheap.
+ *
+ * The property this buys cuts both ways, which is the point. Territory shed
+ * before a war costs a month to pay off, and territory gained takes a month to
+ * weigh fully — so conquest is not instantly taxed either.
+ *
+ * Pure and time-driven, so it is correct whether a world is advanced in one
+ * jump or a thousand — no tick, and nothing to miss if a worker was down.
+ */
+export function blendEmpireWeight(
+  previousAvg: number, heldWeight: number, elapsedMs: number, windowMs: number,
+): number {
+  if (!(elapsedMs > 0) || !(windowMs > 0)) return previousAvg;
+  // Never past the held figure: an overshoot would invent weight nobody had.
+  const share = Math.min(1, elapsedMs / windowMs);
+  return previousAvg + (heldWeight - previousAvg) * share;
+}
+
 export function empireWeightMultiplier(weight30dAvg: number): number {
   return Math.min(C.EW_CAP, 1 + Math.pow(weight30dAvg / C.EW_KNEE, C.EW_STEEPNESS));
 }

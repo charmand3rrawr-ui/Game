@@ -50,6 +50,8 @@ export interface MeResponse {
     id: string; name: string; era: number; reputation: number; qi: string;
     cultivationGrade: number; temporalDebt: number; shardBalanceHours: number;
     envyScopes: string[]; empireWeightAvg: number;
+    /** Set once the player founds or joins an alliance. */
+    allianceId?: string;
   };
   empireWeight: number;
   settlements: { id: string; name: string; holdingType: string; layer: string; coordX: number; coordY: number; loyalty: number; population: number }[];
@@ -215,6 +217,42 @@ export interface AllianceDto {
   treatyBreakReputation: number;
 }
 
+// --------------------------------------------------- the text layer
+
+export interface BoardMetaDto {
+  key: string; title: string; what: string; note: string; higherIsBetter: boolean;
+}
+export interface BoardRowDto {
+  rank: number; playerId: string; name: string; allianceTag?: string;
+  value: number; detail: string; isYou: boolean; envyScopes: string[];
+}
+export interface LeaderboardsDto {
+  boards: BoardMetaDto[];
+  active: string;
+  rows: BoardRowDto[];
+  me: string;
+}
+
+export interface MessageDto {
+  id: string; fromId: string; toId: string; fromName: string; toName: string;
+  subject: string; body: string; sentAt: string; readAt?: string; archivedAt?: string;
+}
+export interface InboxDto {
+  box: 'in' | 'out' | 'archive';
+  messages: MessageDto[];
+  counts: { unread: number; total: number };
+  correspondents: { id: string; name: string; reputation: number; holdings: number }[];
+}
+
+export interface ThreadDto {
+  id: string; scope: 'world' | 'alliance'; title: string;
+  authorId: string; authorName: string;
+  createdAt: string; lastPostAt: string; postCount: number; lockedAt?: string;
+}
+export interface PostDto {
+  id: string; threadId: string; authorId: string; authorName: string; body: string; postedAt: string;
+}
+
 export interface MovementDto {
   id: string; ownerId: string; originId: string; targetId: string; mission: string;
   departsAt: string; arrivesAt: string; formations: { formationId: string; count: number }[];
@@ -275,6 +313,15 @@ export interface Api {
   proposeTreaty(args: { counterpartyId: string; kind: string; terms: Record<string, unknown> }): Promise<TreatyDto>;
   acceptTreaty(treatyId: string): Promise<TreatyDto>;
   breakTreaty(treatyId: string): Promise<{ treaty: TreatyDto; reputationLost: number; effectiveAt: string }>;
+  leaderboards(board?: string): Promise<LeaderboardsDto>;
+  messages(box?: 'in' | 'out' | 'archive'): Promise<InboxDto>;
+  sendMessage(args: { toId: string; subject: string; body: string }): Promise<MessageDto>;
+  readMessage(id: string): Promise<MessageDto>;
+  archiveMessage(id: string): Promise<MessageDto>;
+  threads(scope: 'world' | 'alliance'): Promise<{ scope: string; threads: ThreadDto[] }>;
+  thread(id: string): Promise<{ thread: ThreadDto; posts: PostDto[] }>;
+  openThread(args: { scope: 'world' | 'alliance'; title: string; body: string }): Promise<ThreadDto>;
+  reply(threadId: string, body: string): Promise<PostDto>;
   /** Advance the local world. No-op against a real server, which has a clock. */
   tick?(): void;
 }
@@ -345,6 +392,20 @@ const remoteApi: Api = {
     call(`/treaties/${treatyId}/accept`, { method: 'POST', body: JSON.stringify({ commandId: newCommandId() }) }),
   breakTreaty: (treatyId) =>
     call(`/treaties/${treatyId}/break`, { method: 'POST', body: JSON.stringify({ commandId: newCommandId() }) }),
+  leaderboards: (board) => call(`/leaderboards${board ? `?board=${encodeURIComponent(board)}` : ''}`),
+  messages: (box) => call(`/messages${box ? `?box=${box}` : ''}`),
+  sendMessage: (args) =>
+    call('/messages', { method: 'POST', body: JSON.stringify({ commandId: newCommandId(), ...args }) }),
+  readMessage: (id) =>
+    call(`/messages/${id}/read`, { method: 'POST', body: JSON.stringify({ commandId: newCommandId() }) }),
+  archiveMessage: (id) =>
+    call(`/messages/${id}/archive`, { method: 'POST', body: JSON.stringify({ commandId: newCommandId() }) }),
+  threads: (scope) => call(`/threads?scope=${scope}`),
+  thread: (id) => call(`/threads/${id}`),
+  openThread: (args) =>
+    call('/threads', { method: 'POST', body: JSON.stringify({ commandId: newCommandId(), ...args }) }),
+  reply: (threadId, body) =>
+    call(`/threads/${threadId}/posts`, { method: 'POST', body: JSON.stringify({ commandId: newCommandId(), body }) }),
 };
 
 export const api: Api = isLocalMode() ? localApi : remoteApi;

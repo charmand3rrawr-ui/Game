@@ -785,6 +785,35 @@ async function main(): Promise<void> {
       'trickle of interceptable haulers rather than a supply line.',
   );
 
+  // ---------------------------------------------------------- empire weight
+  const EW_WINDOW_MS = C.fromSpec(
+    'EW_WINDOW_MS',
+    30 * 24 * 3_600_000,
+    'spec/03 §8 \u00b7 "the rolling 30-day average of the sum of admin costs"',
+    'The window empire weight is averaged over. It is what stops a player shedding territory before a ' +
+      'war to spike progression: the benefit takes this long to arrive.',
+    [3_600_000, 365 * 24 * 3_600_000],
+  );
+
+  // ------------------------------------------------------------ the inbox
+  // Anti-abuse limits on the message system. The specification describes
+  // diplomacy at length but never rate-limits it, and a persistent world
+  // without a cap here gets mass-mailed on day one.
+  const MESSAGE_WINDOW_MS = C.assumed(
+    'MESSAGE_WINDOW_MS',
+    3_600_000,
+    'spec/05 §5 rate-limits commands but says nothing about player-to-player messages',
+    'The window the message limit is measured over. One hour is long enough that a real negotiation ' +
+      'never touches it and short enough that a mass-mail campaign stalls immediately.',
+  );
+  const MESSAGE_WINDOW_LIMIT = C.assumed(
+    'MESSAGE_WINDOW_LIMIT',
+    30,
+    'no published cap on outbound messages',
+    'Messages one player may send per window. Sized for an alliance leader coordinating an operation, ' +
+      'not for a broadcast: 30 an hour is far past normal conversation and far short of a mailing list.',
+  );
+
   // --------------------------------------------------------------- movement
   const ZOC_SPEED_MULT = C.fromSpec('ZOC_SPEED_MULT', 0.6, 'spec/03 §4 · zone of control', '0.6x speed inside a hostile fortification radius.', [0, 1]);
   const ATTRITION_PCT = C.fromSpec('ATTRITION_PCT', 0.03, 'spec/03 §4 · supply', '3% of strength per tick beyond supply range, escalating.', [0, 1]);

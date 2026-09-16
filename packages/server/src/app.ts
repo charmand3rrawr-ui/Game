@@ -15,6 +15,7 @@
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
+import { ZodError } from 'zod';
 import websocket from '@fastify/websocket';
 import {
   BALANCE_REVISION,
@@ -46,6 +47,11 @@ import {
   breakTreatySchema,
   GOVERNOR_TIERS,
   GOVERNOR_SPECS,
+  sendMessageSchema,
+  readMessageSchema,
+  archiveMessageSchema,
+  openThreadSchema,
+  replySchema,
   type Problem,
   type ProblemType,
 } from '@ascendance/shared';
@@ -63,6 +69,8 @@ import {
   staffing,
   upgradeCost,
   hqFactorFor,
+  BOARDS,
+  inboxCounts,
 } from '@ascendance/engine';
 import { wire } from './serialize.js';
 import { Hub } from './hub.js';
@@ -137,6 +145,28 @@ export async function buildApp(opts: AppOptions = {}): Promise<App> {
     }
     if ((err as { name?: string }).name === 'NotFound') {
       return reply.status(404).type('application/problem+json').send(problem('not-found', 'Not found', 404, err.message));
+    }
+    /*
+     * A schema refusal is the CLIENT's fault, not the server's.
+     *
+     * Every route validates its body with a Zod schema, and a ZodError is not
+     * a Fastify `validation` error — so every malformed request in the whole
+     * API was answering 500 with Zod's raw message in the detail. That reads as
+     * "the server broke" when the truth is "that body was wrong", and it hands
+     * a caller no stable `type` to react to.
+     */
+    if (err instanceof ZodError) {
+      const first = err.issues[0];
+      const where = first?.path.join('.');
+      return reply.status(400).type('application/problem+json').send(
+        problem(
+          'validation',
+          'Invalid request',
+          400,
+          first ? `${where ? `${where}: ` : ''}${first.message}` : 'the request body did not match the schema',
+          { issues: err.issues.map((i) => ({ path: i.path.join('.'), message: i.message })) },
+        ),
+      );
     }
     if ((err as { validation?: unknown }).validation) {
       return reply.status(400).type('application/problem+json').send(problem('validation', 'Invalid request', 400, err.message));
@@ -600,6 +630,98 @@ export async function buildApp(opts: AppOptions = {}): Promise<App> {
     const out = world.breakTreaty(body.commandId, playerId, req.params.id);
     tick();
     return wire(out);
+  });
+
+  // ==========================================================================
+  // The text layer: boards, inbox, forum
+  //
+  // None of this resolves combat, and all of it is why a persistent world still
+  // has players in it a year later. Two rules hold throughout: a leaderboard is
+  // derived from live state on every read and never stored, and a private board
+  // is private HERE rather than merely unrendered by the client.
+  // ==========================================================================
+
+  fastify.get<{ Querystring: { board?: string } }>('/v1/leaderboards', async (req) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const key = BOARDS.find((b) => b.key === req.query.board)?.key ?? BOARDS[0]!.key;
+    return wire({
+      boards: BOARDS,
+      active: key,
+      rows: world.leaderboard(playerId, key),
+      me: playerId,
+    });
+  });
+
+  fastify.get<{ Querystring: { box?: string } }>('/v1/messages', async (req) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const box = req.query.box === 'out' ? 'out' : req.query.box === 'archive' ? 'archive' : 'in';
+    const messages = world.inbox(playerId, box);
+    const names = new Map(world.knownPlayers(playerId).map((k) => [k.id, k.name]));
+    names.set(playerId, world.player(playerId).name);
+    return wire({
+      box,
+      messages: messages.map((m) => ({
+        ...m,
+        fromName: names.get(m.fromId) ?? 'someone',
+        toName: names.get(m.toId) ?? 'someone',
+      })),
+      counts: inboxCounts(world.inbox(playerId, 'in')),
+      correspondents: world.knownPlayers(playerId),
+    });
+  });
+
+  fastify.post('/v1/messages', async (req, reply) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const body = sendMessageSchema.parse(req.body);
+    const m = world.sendMessage({
+      commandId: body.commandId, fromId: playerId, toId: body.toId,
+      subject: body.subject, body: body.body,
+    });
+    tick();
+    return reply.status(201).send(wire(m));
+  });
+
+  fastify.post<{ Params: { id: string } }>('/v1/messages/:id/read', async (req) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const body = readMessageSchema.parse(req.body ?? { commandId: crypto.randomUUID() });
+    return wire(world.readMessage(body.commandId, playerId, req.params.id));
+  });
+
+  fastify.post<{ Params: { id: string } }>('/v1/messages/:id/archive', async (req) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const body = archiveMessageSchema.parse(req.body ?? { commandId: crypto.randomUUID() });
+    return wire(world.archiveMessage(body.commandId, playerId, req.params.id));
+  });
+
+  fastify.get<{ Querystring: { scope?: string } }>('/v1/threads', async (req) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const scope = req.query.scope === 'alliance' ? 'alliance' : 'world';
+    // An alliance board the player is not in comes back empty from the engine,
+    // which is the check that matters — not a hidden tab.
+    return wire({ scope, threads: world.threads(playerId, scope) });
+  });
+
+  fastify.get<{ Params: { id: string } }>('/v1/threads/:id', async (req) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    return wire(world.thread(playerId, req.params.id));
+  });
+
+  fastify.post('/v1/threads', async (req, reply) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const body = openThreadSchema.parse(req.body);
+    const t = world.openThread({
+      commandId: body.commandId, playerId, scope: body.scope, title: body.title, body: body.body,
+    });
+    tick();
+    return reply.status(201).send(wire(t));
+  });
+
+  fastify.post<{ Params: { id: string } }>('/v1/threads/:id/posts', async (req, reply) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const body = replySchema.parse(req.body);
+    const p = world.reply(body.commandId, playerId, req.params.id, body.body);
+    tick();
+    return reply.status(201).send(wire(p));
   });
 
   // ==========================================================================

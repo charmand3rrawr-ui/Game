@@ -12,8 +12,8 @@
 
 import type {
   Alliance, AllianceMember, Battle, Building, Dynasty, Formation, Governor,
-  LoggedEvent, Movement, Player, Proficiency, QueueItem, ResearchLevel, ScheduledEvent,
-  Settlement, Stockpile, Treaty, Tribulation, Uuid, Millis,
+  LoggedEvent, Message, Movement, Player, Post, Proficiency, QueueItem, ResearchLevel, ScheduledEvent,
+  Settlement, Stockpile, Thread, Treaty, Tribulation, Uuid, Millis,
 } from '@ascendance/shared';
 import type { Store, Tx, Repo, KeyedRepo } from './types.js';
 
@@ -134,6 +134,9 @@ interface Tables {
   treaties: Map<string, Treaty>;
   governors: Map<string, Governor>;
   tribulations: Map<string, Tribulation>;
+  messages: Map<string, Message>;
+  threads: Map<string, Thread>;
+  posts: Map<string, Post>;
   scheduled: Map<string, ScheduledEvent>;
   commands: Map<string, unknown>;
 }
@@ -145,6 +148,7 @@ function emptyTables(): Tables {
     queue: new Map(), formations: new Map(), movements: new Map(),
     battles: new Map(), alliances: new Map(), allianceMembers: new Map(),
     treaties: new Map(), governors: new Map(), tribulations: new Map(), scheduled: new Map(),
+    messages: new Map(), threads: new Map(), posts: new Map(),
     commands: new Map(),
   };
 }
@@ -225,6 +229,9 @@ export class MemoryStore implements Store {
       treaties: new MapRepo(t.treaties, 'treaty'),
       governors: new MapRepo(t.governors, 'governor'),
       tribulations: new MapRepo(t.tribulations, 'tribulation'),
+      messages: new MapRepo(t.messages, 'message'),
+      threads: new MapRepo(t.threads, 'thread'),
+      posts: new MapRepo(t.posts, 'post'),
       scheduled: new MapRepo(t.scheduled, 'scheduled event'),
 
       appendEvent(e: LoggedEvent): void { log.push(e); },

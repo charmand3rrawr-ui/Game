@@ -163,6 +163,114 @@ export function seedWorld(opts: SeedOptions): SeededWorld {
     tx.formations.put(garrison(world, homeId, playerId, '1|Hunter-Archer|Asura (Offense)|Mortal', 60, 'Verrin Longbows', opts.now));
     tx.formations.put(garrison(world, homeId, playerId, '1|Shield Bearer|Guardian (Defense)|Mortal', 50, 'The Standing Shields', opts.now));
 
+    /*
+     * A world that has been going on without you.
+     *
+     * The inbox and the board are where a persistent world stops feeling
+     * procedurally generated, and an empty one on first login teaches a new
+     * player that nobody is there. These are the neighbours already seeded
+     * above, writing about the things the game actually models — a border, a
+     * pact, a stalled governor — so the text layer has something in it before
+     * the player has done anything.
+     */
+    const neighbours = tx.players.all().filter((p) => p.id !== playerId);
+    const hoursAgo = (h: number): Millis => opts.now - BigInt(h) * 3_600_000n;
+
+    if (neighbours[0]) {
+      tx.messages.put({
+        id: world.ids.next('msg', opts.now),
+        worldId,
+        fromId: neighbours[0].id,
+        toId: playerId,
+        subject: 'The stretch of river below your mill',
+        body:
+          'You have been fair about the crossing, so I will be plain. My herds water at the bend below your ' +
+          'mill and I would rather pay for it than argue about it. A non-aggression pact, and I will keep to ' +
+          'my bank.\n\nIf you would rather have the river than the peace, say so now and not with soldiers.',
+        sentAt: hoursAgo(19),
+      });
+    }
+    if (neighbours[1]) {
+      tx.messages.put({
+        id: world.ids.next('msg', opts.now),
+        worldId,
+        fromId: neighbours[1].id,
+        toId: playerId,
+        subject: 'Do not trust a pact from upriver',
+        body:
+          'Whatever they have offered you, they offered me first, and then they took the bend anyway while ' +
+          'my levies were out.\n\nI am not asking for an alliance. I am telling you what I know, and you can ' +
+          'do what you like with it.',
+        sentAt: hoursAgo(6),
+      });
+    }
+
+    // The world board, mid-conversation. Threads carry their own posts.
+    const board = (
+      title: string, authorId: Uuid, atHours: number,
+      posts: { authorId: Uuid; body: string; atHours: number }[],
+    ): void => {
+      const threadId = world.ids.next('th', opts.now);
+      const last = posts.reduce((n, p) => Math.min(n, p.atHours), atHours);
+      tx.threads.put({
+        id: threadId,
+        worldId,
+        scope: 'world',
+        title,
+        authorId,
+        createdAt: hoursAgo(atHours),
+        lastPostAt: hoursAgo(last),
+        postCount: posts.length,
+      });
+      for (const p of posts) {
+        tx.posts.put({
+          id: world.ids.next('po', opts.now),
+          threadId,
+          authorId: p.authorId,
+          body: p.body,
+          postedAt: hoursAgo(p.atHours),
+        });
+      }
+    };
+
+    const a = neighbours[0]?.id ?? playerId;
+    const b = neighbours[1]?.id ?? playerId;
+    const c = neighbours[2]?.id ?? a;
+
+    board('Read this before you appoint your first governor', a, 52, [
+      { authorId: a, atHours: 52, body:
+        'Everything a governor starts takes exactly twice as long. That is the whole system — there is no ' +
+        'output tax and no upkeep, just the 2x.\n\nWhat catches people is that governors have NO judgement. ' +
+        'Write a build order that hits a shortfall and it stalls there. It will not skip ahead to something ' +
+        'it can afford. That is working correctly, and the stall shows on your Attention dashboard.' },
+      { authorId: b, atHours: 44, body:
+        'Learned this the hard way. Left a Granary at the top of the order, could not afford it for two days, ' +
+        'and the province built nothing at all in that time. Seize is what saved me — you keep the elapsed ' +
+        'progress and the rest recalculates at 1x.' },
+      { authorId: c, atHours: 9, body:
+        'Worth adding that Seize needs a free PERSONAL slot. That scarcity is the only reason governing ' +
+        'everything and instantly seizing it all back is not simply the correct play.' },
+    ]);
+
+    board('Empire weight is not a penalty and people keep saying it is', b, 31, [
+      { authorId: b, atHours: 31, body:
+        'It raises the XP your armies need, up to about 9.9 million times at the very top. It does not reduce ' +
+        'your output and it does not cap your holdings — there is no cap.\n\nIt is a 30-day rolling average, ' +
+        'which is the part that matters: dropping territory before a war costs you a month, not an afternoon.' },
+      { authorId: a, atHours: 12, body:
+        'Right. Going wide is allowed. It just means your veterans stop being cheap.' },
+    ]);
+
+    board('If you are breaking through, do it somewhere quiet', c, 27, [
+      { authorId: c, atHours: 27, body:
+        'The Qi is spent when you DECLARE, not when you succeed. And several trials are visible to everyone ' +
+        'nearby, which means rivals can come and crash them.\n\nCheck whether your next one is crashable ' +
+        'before you commit. The Dao screen says so plainly, and it says it before you press the button.' },
+      { authorId: a, atHours: 4, body:
+        'Also: no amount of Chrono Shards will touch a breakthrough. They are barred outright, and the ' +
+        'Temporal Debt from spending them anywhere else makes every trial harder. That one is not a bug.' },
+    ]);
+
     // The daily Heaven's Envy resolution, armed from genesis.
     world.scheduler.schedule(tx, {
       shardId,

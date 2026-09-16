@@ -376,3 +376,100 @@ describe('seize and shards work on every kind', () => {
     expect(BigInt(refunded['grain']!)).toBeGreaterThan(0n);
   });
 });
+
+// ============================================================================
+// Empire weight is an AVERAGE, and that is a safeguard, not a detail
+// ============================================================================
+
+describe('empire weight is the rolling average, not a live reading', () => {
+  const T = 1_700_000_000_000n;
+  const DAY = 86_400_000n;
+
+  /** Take every holding on the shard, sampling as conquest would. */
+  function seize(w: ReturnType<typeof seedWorld>): void {
+    w.world.sampleEmpireWeight(w.playerId);
+    w.world.store.transaction((tx) => {
+      for (const s of tx.settlements.all()) {
+        if (s.ownerId !== w.playerId) tx.settlements.put({ ...s, ownerId: w.playerId });
+      }
+    });
+    w.world.sampleEmpireWeight(w.playerId);
+  }
+
+  /** Drop everything but the capital, sampling as abandonment would. */
+  function shed(w: ReturnType<typeof seedWorld>): void {
+    w.world.sampleEmpireWeight(w.playerId);
+    w.world.store.transaction((tx) => {
+      for (const s of tx.settlements.all()) {
+        if (s.ownerId === w.playerId && s.id !== w.homeId) tx.settlements.put({ ...s, ownerId: undefined });
+      }
+    });
+    w.world.sampleEmpireWeight(w.playerId);
+  }
+
+  it('does not drop the moment territory is shed', () => {
+    // spec/03 §8: "the rolling average is what stops a player shedding
+    // territory before a war to spike progression." A live reading would let a
+    // player drop three provinces, fight the battle at a lower XP requirement,
+    // and take them back the next day.
+    const w = seedWorld({ worldId: 'ew', now: T, neighbours: 6 });
+
+    // Hold everything, then let a full window pass so the average catches up.
+    seize(w);
+    w.world.advanceTo(T + 30n * DAY);
+    // Sampling is what conquest does; the average is only correct if each
+    // period is closed off at the weight that held during it.
+    w.world.sampleEmpireWeight(w.playerId);
+    const wide = w.world.empireWeight(w.playerId);
+    expect(wide).toBeGreaterThan(0);
+
+    // Now shed everything but the capital, and check again immediately.
+    shed(w);
+    expect(w.world.liveEmpireWeight(w.playerId)).toBeLessThan(wide * 0.5);
+    // The charged figure has barely moved: the dodge does not work today.
+    expect(w.world.empireWeight(w.playerId)).toBeGreaterThan(wide * 0.9);
+  });
+
+  it('pays off over the window rather than never', () => {
+    // The safeguard is a delay, not a wall — a player who genuinely shrinks
+    // must eventually be charged as a smaller player.
+    const w = seedWorld({ worldId: 'ew2', now: T, neighbours: 6 });
+    seize(w);
+    w.world.advanceTo(T + 30n * DAY);
+    w.world.sampleEmpireWeight(w.playerId);
+    const wide = w.world.empireWeight(w.playerId);
+
+    shed(w);
+    w.world.advanceTo(T + 75n * DAY);
+    expect(w.world.empireWeight(w.playerId)).toBeLessThan(wide * 0.4);
+  });
+
+  it('does not punish conquest instantly either', () => {
+    // The average cuts both ways, which is the point: territory gained takes a
+    // month to weigh fully, so taking ground is not immediately taxed.
+    const w = seedWorld({ worldId: 'ew3', now: T, neighbours: 6 });
+    const before = w.world.empireWeight(w.playerId);
+    seize(w);
+    w.world.advanceTo(T + DAY);
+    const afterOneDay = w.world.empireWeight(w.playerId);
+    const live = w.world.liveEmpireWeight(w.playerId);
+    expect(afterOneDay).toBeGreaterThan(before);
+    expect(afterOneDay).toBeLessThan(live * 0.2);
+  });
+
+  it('is advanced by the world clock, not by how many steps it took', () => {
+    // Determinism: a world jumped forward must land where a stepped one does.
+    const jump = seedWorld({ worldId: 'ewd', now: T, neighbours: 4 });
+    const step = seedWorld({ worldId: 'ewd', now: T, neighbours: 4 });
+    for (const w of [jump, step]) seize(w);
+    jump.world.advanceTo(T + 10n * DAY);
+    const a = jump.world.empireWeight(jump.playerId);
+
+    for (let d = 1; d <= 10; d++) {
+      step.world.advanceTo(T + BigInt(d) * DAY);
+      // Force the lazy advance to be taken at each step.
+      step.world.empireWeight(step.playerId);
+    }
+    expect(step.world.empireWeight(step.playerId)).toBeCloseTo(a, 6);
+  });
+});

@@ -27,6 +27,8 @@ import {
   productionRows,
   staffing,
   upgradeCost,
+  BOARDS,
+  inboxCounts,
   type SeededWorld,
 } from '@ascendance/engine';
 import { BALANCE_REVISION, ASSUMED_CONSTANTS, BUILDINGS, C, GOVERNOR_SPECS, GOVERNOR_TIERS, HOLDINGS, RESEARCH, ROSTER, VETERANCY_TIERS, tryUnitDef } from '@ascendance/shared';
@@ -429,6 +431,87 @@ export const localApi: Api = {
     return wrap(() => wire(world.breakTreaty(crypto.randomUUID(), playerId, treatyId)) as {
       treaty: import('./api.js').TreatyDto; reputationLost: number; effectiveAt: string;
     });
+  },
+
+  // ------------------------------------------------- the text layer
+
+  leaderboards(board) {
+    const { world, playerId } = ensureWorld();
+    return wrap(() => {
+      const key = BOARDS.find((b) => b.key === board)?.key ?? BOARDS[0]!.key;
+      return wire({
+        boards: BOARDS,
+        active: key,
+        rows: world.leaderboard(playerId, key),
+        me: playerId,
+      }) as import('./api.js').LeaderboardsDto;
+    });
+  },
+
+  messages(box) {
+    const { world, playerId } = ensureWorld();
+    return wrap(() => {
+      const which = box ?? 'in';
+      const names = new Map(world.knownPlayers(playerId).map((k) => [k.id, k.name]));
+      names.set(playerId, world.player(playerId).name);
+      return wire({
+        box: which,
+        messages: world.inbox(playerId, which).map((m) => ({
+          ...m,
+          fromName: names.get(m.fromId) ?? 'someone',
+          toName: names.get(m.toId) ?? 'someone',
+        })),
+        counts: inboxCounts(world.inbox(playerId, 'in')),
+        correspondents: world.knownPlayers(playerId),
+      }) as import('./api.js').InboxDto;
+    });
+  },
+
+  sendMessage(args) {
+    const { world, playerId } = ensureWorld();
+    tick();
+    return wrap(() => wire(world.sendMessage({
+      commandId: crypto.randomUUID(), fromId: playerId, toId: args.toId,
+      subject: args.subject, body: args.body,
+    })) as unknown as import('./api.js').MessageDto);
+  },
+
+  readMessage(id) {
+    const { world, playerId } = ensureWorld();
+    return wrap(() => wire(world.readMessage(crypto.randomUUID(), playerId, id)) as unknown as import('./api.js').MessageDto);
+  },
+
+  archiveMessage(id) {
+    const { world, playerId } = ensureWorld();
+    return wrap(() => wire(world.archiveMessage(crypto.randomUUID(), playerId, id)) as unknown as import('./api.js').MessageDto);
+  },
+
+  threads(scope) {
+    const { world, playerId } = ensureWorld();
+    return wrap(() => wire({ scope, threads: world.threads(playerId, scope) }) as {
+      scope: string; threads: import('./api.js').ThreadDto[];
+    });
+  },
+
+  thread(id) {
+    const { world, playerId } = ensureWorld();
+    return wrap(() => wire(world.thread(playerId, id)) as {
+      thread: import('./api.js').ThreadDto; posts: import('./api.js').PostDto[];
+    });
+  },
+
+  openThread(args) {
+    const { world, playerId } = ensureWorld();
+    tick();
+    return wrap(() => wire(world.openThread({
+      commandId: crypto.randomUUID(), playerId, scope: args.scope, title: args.title, body: args.body,
+    })) as unknown as import('./api.js').ThreadDto);
+  },
+
+  reply(threadId, body) {
+    const { world, playerId } = ensureWorld();
+    tick();
+    return wrap(() => wire(world.reply(crypto.randomUUID(), playerId, threadId, body)) as unknown as import('./api.js').PostDto);
   },
 };
 

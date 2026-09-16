@@ -27,7 +27,9 @@ import type {
   Formation,
   Governor,
   LoggedEvent,
+  Message,
   Movement,
+  Post,
   Player,
   Proficiency,
   QueueItem,
@@ -35,6 +37,7 @@ import type {
   ScheduledEvent,
   Settlement,
   Stockpile,
+  Thread,
   Treaty,
   Tribulation,
   Uuid,
@@ -64,6 +67,9 @@ export interface Tx {
   treaties: Repo<Treaty>;
   governors: Repo<Governor>;
   tribulations: Repo<Tribulation>;
+  messages: Repo<Message>;
+  threads: Repo<Thread>;
+  posts: Repo<Post>;
   scheduled: Repo<ScheduledEvent>;
 
   /** Append-only. Never updated, never deleted (spec/02 §7). */

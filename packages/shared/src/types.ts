@@ -59,6 +59,19 @@ export interface Player {
    * progression; the rolling average makes that cost a month (spec/04 §5).
    */
   empireWeightAvg: number;
+  /**
+   * The live weight as at the last sample — the figure that HELD since then.
+   *
+   * Live weight only changes when holdings do, so it is piecewise-constant
+   * between samples, and that is what lets a thirty-day average be kept without
+   * storing thirty days of history.
+   */
+  empireWeightHeld?: number;
+  /**
+   * When `empireWeightAvg` was last advanced. Lazy, like every other accrual
+   * in this engine — there is no tick that maintains it.
+   */
+  empireWeightSampledAt?: Millis;
   cultivationGrade: number;
   qi: bigint;
   /** 0..5 Chrono Shard karma. Raises tribulation difficulty, suppresses Qi regen. */
@@ -422,6 +435,61 @@ export interface ScheduledEvent {
   payload: Record<string, unknown>;
   claimedBy?: string;
   claimedAt?: Millis;
+}
+
+/**
+ * A direct message between two players.
+ *
+ * Diplomacy in this genre happens in the inbox long before it happens on the
+ * map: the treaty is the record of a conversation, not the conversation. So
+ * messages are first-class state with a real read model, not a chat overlay.
+ */
+export interface Message {
+  id: Uuid;
+  worldId: Uuid;
+  fromId: Uuid;
+  toId: Uuid;
+  subject: string;
+  body: string;
+  sentAt: Millis;
+  /** Unset until the recipient opens it. Drives the unread badge. */
+  readAt?: Millis;
+  /** Set when the recipient files it away, so an inbox can be cleared. */
+  archivedAt?: Millis;
+}
+
+/** Where a forum thread lives: the whole world, or one alliance's private board. */
+export type BoardScope = 'world' | 'alliance';
+
+/**
+ * A forum thread.
+ *
+ * Kept deliberately plain — a title, a scope, and posts. The forum is where a
+ * server argues about a war it has not declared yet, and that works better as
+ * slow text than as anything cleverer.
+ */
+export interface Thread {
+  id: Uuid;
+  worldId: Uuid;
+  scope: BoardScope;
+  /** Set when the scope is `alliance`. */
+  allianceId?: Uuid;
+  title: string;
+  authorId: Uuid;
+  createdAt: Millis;
+  /** Bumped by every reply, so a board sorts by life rather than by birth. */
+  lastPostAt: Millis;
+  postCount: number;
+  /** Locked threads keep their history and stop taking replies. */
+  lockedAt?: Millis;
+}
+
+export interface Post {
+  id: Uuid;
+  threadId: Uuid;
+  authorId: Uuid;
+  body: string;
+  postedAt: Millis;
 }
 
 export type EventKind =

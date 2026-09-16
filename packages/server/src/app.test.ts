@@ -338,6 +338,129 @@ describe('governor and alliance endpoints (M8)', () => {
   });
 });
 
+describe('the text layer around the game', () => {
+  it('derives every leaderboard from live state', async () => {
+    const { body } = await get('/v1/leaderboards');
+    const boards = body['boards'] as { key: string }[];
+    expect(boards.map((b) => b.key)).toContain('empire_weight');
+    expect(boards.map((b) => b.key)).toContain('shard_spend');
+
+    const rows = body['rows'] as { isYou: boolean; value: number }[];
+    expect(rows.some((r) => r.isYou)).toBe(true);
+
+    // Take a holding and the board already knows, because nothing is stored.
+    const before = (body['rows'] as { isYou: boolean; value: number }[]).find((r) => r.isYou)!.value;
+    app.world.store.transaction((tx) => {
+      const other = tx.settlements.all().find((st) => st.ownerId && st.ownerId !== app.playerId)!;
+      tx.settlements.put({ ...other, ownerId: app.playerId });
+    });
+    const after = await get('/v1/leaderboards?board=holdings');
+    expect((after.body['rows'] as { isYou: boolean; value: number }[]).find((r) => r.isYou)!.value)
+      .toBeGreaterThan(before - 1);
+  });
+
+  it('publishes shard spend rather than hiding it', async () => {
+    // spec/04 §11: the 30-day purchase total is PUBLIC. Buying advantage is
+    // allowed; being private about it is what is not.
+    app.world.store.transaction((tx) => {
+      const other = tx.players.all().find((p) => p.id !== app.playerId)!;
+      tx.players.put({ ...other, shardHoursPurchased30d: 250, envyScopes: ['universe'] });
+    });
+    const { body } = await get('/v1/leaderboards?board=shard_spend');
+    const rows = body['rows'] as { value: number; envyScopes: string[] }[];
+    expect(rows[0]!.value).toBe(250);
+    expect(rows[0]!.envyScopes).toContain('universe');
+  });
+
+  it('carries an inbox the world has already written to', async () => {
+    const { body } = await get('/v1/messages');
+    const messages = body['messages'] as { subject: string; fromName: string }[];
+    expect(messages.length).toBeGreaterThan(0);
+    expect(messages[0]!.fromName).not.toBe('someone');
+    expect((body['counts'] as { unread: number }).unread).toBeGreaterThan(0);
+  });
+
+  it('sends, reads and archives a message', async () => {
+    const { body: inbox } = await get('/v1/messages');
+    const to = (inbox['correspondents'] as { id: string }[])[0]!.id;
+
+    const sent = await post('/v1/messages', {
+      commandId: cmd(), toId: to, subject: 'Terms', body: 'The bend is yours if the crossing is mine.',
+    });
+    expect(sent.status).toBe(201);
+    const outbox = await get('/v1/messages?box=out');
+    expect((outbox.body['messages'] as { id: string }[]).some((m) => m.id === sent.body['id'])).toBe(true);
+
+    const mine = (inbox['messages'] as { id: string }[])[0]!.id;
+    expect((await post(`/v1/messages/${mine}/read`, { commandId: cmd() })).status).toBe(200);
+    expect((await post(`/v1/messages/${mine}/archive`, { commandId: cmd() })).status).toBe(200);
+
+    const after = await get('/v1/messages');
+    expect((after.body['messages'] as { id: string }[]).some((m) => m.id === mine)).toBe(false);
+    const archived = await get('/v1/messages?box=archive');
+    expect((archived.body['messages'] as { id: string }[]).some((m) => m.id === mine)).toBe(true);
+  });
+
+  it('answers a malformed body with 400 and a usable reason, not 500', async () => {
+    // A schema refusal is the caller's fault. Every route validates with Zod,
+    // and a ZodError is not a Fastify validation error — so these used to come
+    // back as 500s reading "the server broke" for a body that was simply wrong.
+    const { body: inbox } = await get('/v1/messages');
+    const to = (inbox['correspondents'] as { id: string }[])[0]!.id;
+
+    const empty = await post('/v1/messages', { commandId: cmd(), toId: to, subject: 'x', body: '' });
+    expect(empty.status).toBe(400);
+    expect(problemCode(empty.body as unknown as Problem)).toBe('validation');
+    // The reason names the field, so a client can point at it.
+    expect(String((empty.body as unknown as Problem).detail)).toMatch(/body/);
+
+    const notAUuid = await post('/v1/messages', { commandId: cmd(), toId: 'nope', subject: 'x', body: 'y' });
+    expect(notAUuid.status).toBe(400);
+    expect(String((notAUuid.body as unknown as Problem).detail)).toMatch(/toId/);
+  });
+
+  it('opens with a world board mid-conversation', async () => {
+    const { body } = await get('/v1/threads?scope=world');
+    const threads = body['threads'] as { id: string; postCount: number; authorName: string }[];
+    expect(threads.length).toBeGreaterThan(0);
+    expect(threads[0]!.postCount).toBeGreaterThan(1);
+
+    const one = await get(`/v1/threads/${threads[0]!.id}`);
+    expect((one.body['posts'] as unknown[]).length).toBe(threads[0]!.postCount);
+  });
+
+  it('opens a thread and bumps it on reply', async () => {
+    const opened = await post('/v1/threads', {
+      commandId: cmd(), scope: 'world',
+      title: 'Convoys on the north road', body: 'Three in a day, all the same way.',
+    });
+    expect(opened.status).toBe(201);
+    const id = opened.body['id'] as string;
+
+    expect((await post(`/v1/threads/${id}/posts`, { commandId: cmd(), body: 'Two here as well.' })).status).toBe(201);
+    const { body } = await get('/v1/threads?scope=world');
+    const top = (body['threads'] as { id: string; postCount: number }[])[0]!;
+    expect(top.id).toBe(id);
+    expect(top.postCount).toBe(2);
+  });
+
+  it('keeps an alliance board private on the server, not by hiding the tab', async () => {
+    // Nothing to see before joining one, and opening a thread there is refused.
+    expect((await get('/v1/threads?scope=alliance')).body['threads']).toEqual([]);
+    const refused = await post('/v1/threads', {
+      commandId: cmd(), scope: 'alliance', title: 'Operation timing', body: '04:00 server.',
+    });
+    expect(refused.status).toBe(422);
+
+    await post('/v1/alliance', { commandId: cmd(), name: 'The Verrin Compact', tag: 'VRN' });
+    const allowed = await post('/v1/threads', {
+      commandId: cmd(), scope: 'alliance', title: 'Operation timing', body: '04:00 server. Do not be early.',
+    });
+    expect(allowed.status).toBe(201);
+    expect((await get('/v1/threads?scope=alliance')).body['threads']).toHaveLength(1);
+  });
+});
+
 describe('rate limiting', () => {
   it('permits a coordinated wave but rejects a machine-gun pattern', () => {
     // Sending twenty armies to land three seconds apart is the game played

@@ -20,10 +20,12 @@ import {
   HOLDINGS,
   adminUpkeep,
   countWhere,
+  VETERANCY_TIERS,
   applyShards,
   battleSeed,
   distance,
   empireWeightMultiplier,
+  blendEmpireWeight,
   gradeForLevel,
   personalQueueSlots,
   prng,
@@ -48,6 +50,10 @@ import {
   type AllianceMember,
   type AllianceRole,
   type Governor,
+  type Message,
+  type Post,
+  type Thread,
+  type BoardScope,
   type GovernorSpecs,
   type GovernorTier,
   type Stockpile,
@@ -93,6 +99,10 @@ import {
   tribulationOdds, validateBreakthrough, type QiSources, type TribulationOdds,
 } from './sim/cultivation.js';
 import {
+  BOARDS, canReadBoard, rankBoard, validateMessage, validatePost, validateThread,
+  type BoardKey, type BoardRow, type BoardSubject,
+} from './sim/social.js';
+import {
   auditGovernor, checkEscalation, corruptSpecs, governorTier, nextIntent, postureEffect,
   validateAppointment, type Audit, type Intent,
 } from './sim/governor.js';
@@ -130,6 +140,21 @@ export interface Options {
   buildings: { key: string; name: string; category: string; currentLevel: number; cost: Record<string, bigint>; timeMs: Millis }[];
   training: { unitKey: string; name: string; role: string; grade: string; allowed: boolean; reason?: string; cost: Record<string, bigint>; timeMs: Millis }[];
   research: { key: string; name: string; era: number; branch: string; level: number; grade: number; allowed: boolean; reason?: string; cost: Record<string, bigint>; timeMs: Millis }[];
+}
+
+/**
+ * The tier a veterancy level sits in, by name.
+ *
+ * Boards show "Copper" rather than "level 412" because the tier is what players
+ * actually say to each other about a formation.
+ */
+function veterancyTierName(level: number): string {
+  let cumulative = 0;
+  for (const t of VETERANCY_TIERS) {
+    cumulative = t.cumulativeLevels;
+    if (level <= cumulative) return t.name;
+  }
+  return VETERANCY_TIERS[VETERANCY_TIERS.length - 1]?.name ?? 'Copper';
 }
 
 /** A player you could plausibly treat with: someone whose holdings you can see. */
@@ -309,9 +334,24 @@ export class World {
    * the strongest incentive alignment in the design (spec/04 §5).
    */
   empireWeight(playerId: Uuid): number {
-    return this.store.read((tx) =>
-      adminUpkeep(tx.settlements.where((s) => s.ownerId === playerId).map((s) => holdingRef(s.holdingType).adminCost)),
-    );
+    // A read, so it reports the average without persisting the advance — the
+    // next command that needs it will store it.
+    return this.store.read((tx) => {
+      const player = tx.players.get(playerId);
+      const live = this.liveWeightIn(tx, playerId);
+      if (!player) return live;
+      return blendEmpireWeight(
+        player.empireWeightAvg,
+        player.empireWeightHeld ?? live,
+        Number(this.clock - (player.empireWeightSampledAt ?? player.createdAt)),
+        C.EW_WINDOW_MS,
+      );
+    });
+  }
+
+  /** What the player's holdings cost to administer right now, before averaging. */
+  liveEmpireWeight(playerId: Uuid): number {
+    return this.store.read((tx) => this.liveWeightIn(tx, playerId));
   }
 
   /**
@@ -1664,6 +1704,245 @@ export class World {
     });
   }
 
+  // ==========================================================================
+  // The text layer around the game: boards, inbox, forum
+  // ==========================================================================
+
+  /**
+   * Everyone on this player's shard, assembled for the leaderboards.
+   *
+   * ONE PASS over each table. A board is derived from live state every time it
+   * is read — never stored — so it cannot drift from the thing it ranks, but
+   * that only stays affordable if assembling it does not walk the settlement
+   * table once per player.
+   */
+  boardSubjects(playerId: Uuid): BoardSubject[] {
+    return this.store.read((tx) => {
+      const shards = new Set(tx.settlements.where((s) => s.ownerId === playerId).map((s) => s.shardId));
+
+      const holdings = new Map<Uuid, number>();
+      for (const s of tx.settlements.all()) {
+        if (s.ownerId === undefined || !shards.has(s.shardId)) continue;
+        holdings.set(s.ownerId, (holdings.get(s.ownerId) ?? 0) + 1);
+      }
+
+      const best = new Map<Uuid, number>();
+      for (const f of tx.formations.all()) {
+        const top = Math.max(f.atkLevel, f.defLevel);
+        if (top > (best.get(f.ownerId) ?? -1)) best.set(f.ownerId, top);
+      }
+
+      const tags = new Map<Uuid, string>();
+      for (const a of tx.alliances.all()) tags.set(a.id, a.tag);
+
+      const out: BoardSubject[] = [];
+      for (const p of tx.players.all()) {
+        // Only players with a presence on this shard. A galaxy-wide board would
+        // rank people the viewer has no way to reach.
+        if (!holdings.has(p.id) && p.id !== playerId) continue;
+        const level = best.get(p.id) ?? 0;
+        out.push({
+          playerId: p.id,
+          name: p.name,
+          allianceTag: p.allianceId ? tags.get(p.allianceId) : undefined,
+          // The rolling average, brought up to date the same way combat sees
+          // it — a board showing a different number from the one that charges
+          // you would be worse than no board.
+          empireWeightAvg: blendEmpireWeight(
+            p.empireWeightAvg,
+            p.empireWeightHeld ?? 0,
+            Number(this.clock - (p.empireWeightSampledAt ?? p.createdAt)),
+            C.EW_WINDOW_MS,
+          ),
+          cultivationGrade: p.cultivationGrade,
+          realm: realmName(p.cultivationGrade),
+          reputation: p.reputation,
+          holdings: holdings.get(p.id) ?? 0,
+          bestVeterancy: level,
+          veterancyTier: veterancyTierName(level),
+          shardHoursPurchased30d: p.shardHoursPurchased30d,
+          envyScopes: p.envyScopes,
+        });
+      }
+      return out;
+    });
+  }
+
+  /** One ranked board, derived on read. */
+  leaderboard(playerId: Uuid, key: BoardKey, limit = 50): BoardRow[] {
+    return rankBoard(key, this.boardSubjects(playerId), playerId, limit);
+  }
+
+  // --------------------------------------------------------------- messages
+
+  /**
+   * Write to another player.
+   *
+   * Deliberately permissive about who: negotiating with someone you are at war
+   * with is the point of having an inbox. The rate limit is on volume, which is
+   * where mass-mailing lives.
+   */
+  sendMessage(args: { commandId: Uuid; fromId: Uuid; toId: Uuid; subject: string; body: string }): Message {
+    return this.idempotent(args.commandId, (tx) => {
+      tx.players.require(args.fromId);
+      tx.players.require(args.toId);
+
+      const since = this.clock - BigInt(C.MESSAGE_WINDOW_MS);
+      const sentInWindow = countWhere(
+        tx.messages.where((m) => m.fromId === args.fromId),
+        (m) => m.sentAt >= since,
+      );
+      const check = validateMessage({
+        fromId: args.fromId, toId: args.toId, subject: args.subject, body: args.body,
+        sentInWindow, windowLimit: C.MESSAGE_WINDOW_LIMIT,
+      });
+      if (!check.ok) throw new CommandError('validation', check.reason);
+
+      const msg: Message = {
+        id: this.ids.next('msg', this.clock),
+        worldId: this.worldId,
+        fromId: args.fromId,
+        toId: args.toId,
+        subject: args.subject.trim(),
+        body: args.body.trim(),
+        sentAt: this.clock,
+      };
+      tx.messages.put(msg);
+      // Pushed, because an inbox that has to be refreshed is one nobody reads.
+      this.emit('message.received', `player:${args.toId}`, {
+        messageId: msg.id, fromId: args.fromId, subject: msg.subject,
+      });
+      return msg;
+    });
+  }
+
+  inbox(playerId: Uuid, box: 'in' | 'out' | 'archive' = 'in'): Message[] {
+    return this.store.read((tx) => {
+      const rows = tx.messages.where((m) =>
+        box === 'out'
+          ? m.fromId === playerId
+          : m.toId === playerId && (box === 'archive') === (m.archivedAt !== undefined),
+      );
+      return rows.sort((a, b) => (a.sentAt < b.sentAt ? 1 : a.sentAt > b.sentAt ? -1 : 0));
+    });
+  }
+
+  /** Opening a message marks it read. Only the recipient's copy is marked. */
+  readMessage(commandId: Uuid, playerId: Uuid, messageId: Uuid): Message {
+    return this.idempotent(commandId, (tx) => {
+      const m = tx.messages.require(messageId);
+      if (m.toId !== playerId && m.fromId !== playerId) {
+        throw new CommandError('not-owner', 'that message is not yours');
+      }
+      if (m.toId !== playerId || m.readAt !== undefined) return m;
+      const out: Message = { ...m, readAt: this.clock };
+      tx.messages.put(out);
+      return out;
+    });
+  }
+
+  archiveMessage(commandId: Uuid, playerId: Uuid, messageId: Uuid): Message {
+    return this.idempotent(commandId, (tx) => {
+      const m = tx.messages.require(messageId);
+      if (m.toId !== playerId) throw new CommandError('not-owner', 'that message is not yours');
+      const out: Message = { ...m, archivedAt: this.clock, readAt: m.readAt ?? this.clock };
+      tx.messages.put(out);
+      return out;
+    });
+  }
+
+  // ------------------------------------------------------------------ forum
+
+  /**
+   * Threads on a board the player can actually see.
+   *
+   * The alliance board is checked HERE rather than by a client that simply does
+   * not render the tab — otherwise "private" means "private from the UI".
+   */
+  threads(playerId: Uuid, scope: BoardScope, limit = 50): (Thread & { authorName: string })[] {
+    return this.store.read((tx) => {
+      const player = tx.players.require(playerId);
+      const names = new Map(tx.players.all().map((p) => [p.id, p.name]));
+      return tx.threads
+        .where((t) => t.scope === scope && canReadBoard(scope, player.allianceId, t.allianceId))
+        .sort((a, b) => (a.lastPostAt < b.lastPostAt ? 1 : a.lastPostAt > b.lastPostAt ? -1 : 0))
+        .slice(0, limit)
+        .map((t) => ({ ...t, authorName: names.get(t.authorId) ?? 'someone' }));
+    });
+  }
+
+  thread(playerId: Uuid, threadId: Uuid): { thread: Thread; posts: (Post & { authorName: string })[] } {
+    return this.store.read((tx) => {
+      const player = tx.players.require(playerId);
+      const t = tx.threads.require(threadId);
+      if (!canReadBoard(t.scope, player.allianceId, t.allianceId)) {
+        throw new CommandError('not-owner', 'that board is not yours to read');
+      }
+      const names = new Map(tx.players.all().map((p) => [p.id, p.name]));
+      const posts = tx.posts
+        .where((p) => p.threadId === threadId)
+        .sort((a, b) => (a.postedAt < b.postedAt ? -1 : a.postedAt > b.postedAt ? 1 : 0))
+        .map((p) => ({ ...p, authorName: names.get(p.authorId) ?? 'someone' }));
+      return { thread: t, posts };
+    });
+  }
+
+  openThread(args: { commandId: Uuid; playerId: Uuid; scope: BoardScope; title: string; body: string }): Thread {
+    return this.idempotent(args.commandId, (tx) => {
+      const player = tx.players.require(args.playerId);
+      if (args.scope === 'alliance' && !player.allianceId) {
+        throw new CommandError('validation', 'you are not in an alliance');
+      }
+      const check = validateThread({ title: args.title, body: args.body });
+      if (!check.ok) throw new CommandError('validation', check.reason);
+
+      const thread: Thread = {
+        id: this.ids.next('th', this.clock),
+        worldId: this.worldId,
+        scope: args.scope,
+        allianceId: args.scope === 'alliance' ? player.allianceId : undefined,
+        title: args.title.trim(),
+        authorId: args.playerId,
+        createdAt: this.clock,
+        lastPostAt: this.clock,
+        postCount: 1,
+      };
+      tx.threads.put(thread);
+      tx.posts.put({
+        id: this.ids.next('po', this.clock),
+        threadId: thread.id,
+        authorId: args.playerId,
+        body: args.body.trim(),
+        postedAt: this.clock,
+      });
+      return thread;
+    });
+  }
+
+  reply(commandId: Uuid, playerId: Uuid, threadId: Uuid, body: string): Post {
+    return this.idempotent(commandId, (tx) => {
+      const player = tx.players.require(playerId);
+      const t = tx.threads.require(threadId);
+      if (!canReadBoard(t.scope, player.allianceId, t.allianceId)) {
+        throw new CommandError('not-owner', 'that board is not yours to post on');
+      }
+      const check = validatePost({ body, locked: t.lockedAt !== undefined });
+      if (!check.ok) throw new CommandError('validation', check.reason);
+
+      const post: Post = {
+        id: this.ids.next('po', this.clock),
+        threadId,
+        authorId: playerId,
+        body: body.trim(),
+        postedAt: this.clock,
+      };
+      tx.posts.put(post);
+      // A board sorts by life, not by birth.
+      tx.threads.put({ ...t, lastPostAt: this.clock, postCount: t.postCount + 1 });
+      return post;
+    });
+  }
+
   allianceOf(playerId: Uuid): { alliance: Alliance; members: AllianceMember[] } | undefined {
     return this.store.read((tx) => {
       const player = tx.players.require(playerId);
@@ -2371,8 +2650,73 @@ export class World {
     }
   }
 
-  private empireWeightIn(tx: Tx, playerId: Uuid): number {
+  /**
+   * Admin cost of everything this player holds, right now.
+   *
+   * The LIVE reading. On its own this is not what anything should be charged
+   * against — see `empireWeightIn`.
+   */
+  private liveWeightIn(tx: Tx, playerId: Uuid): number {
     return adminUpkeep(tx.settlements.where((s) => s.ownerId === playerId).map((s) => holdingRef(s.holdingType).adminCost));
+  }
+
+  /**
+   * The player's empire weight: the ROLLING AVERAGE, brought up to date.
+   *
+   * `spec/03 §8` is explicit that the average, not a live reading, "is what
+   * stops a player shedding territory before a war to spike progression".
+   * Charging combat against the live figure — which is what this used to do —
+   * removed that safeguard entirely: drop three provinces, fight at a lower XP
+   * requirement, take them back the next day.
+   *
+   * Advanced lazily, on read, like every other accrual here: no tick maintains
+   * it, and a world advanced in one jump lands where one advanced in a thousand
+   * steps would.
+   */
+  private empireWeightIn(tx: Tx, playerId: Uuid): number {
+    const player = tx.players.get(playerId);
+    if (!player) return this.liveWeightIn(tx, playerId);
+    const avg = this.sampleWeight(tx, playerId);
+    void player;
+    return avg;
+  }
+
+  /**
+   * Advance the rolling average and record what is held from now on.
+   *
+   * Called wherever empire weight is charged, and — importantly — wherever
+   * HOLDINGS CHANGE. The average is only correct if each period is averaged at
+   * the weight that actually held during it, so the sample has to be taken
+   * before ownership moves, not after.
+   */
+  private sampleWeight(tx: Tx, playerId: Uuid): number {
+    const player = tx.players.get(playerId);
+    if (!player) return 0;
+    const live = this.liveWeightIn(tx, playerId);
+    const held = player.empireWeightHeld ?? live;
+    const since = player.empireWeightSampledAt ?? player.createdAt;
+
+    const avg = blendEmpireWeight(
+      player.empireWeightAvg, held, Number(this.clock - since), C.EW_WINDOW_MS,
+    );
+    tx.players.put({
+      ...player,
+      empireWeightAvg: avg,
+      empireWeightHeld: live,
+      empireWeightSampledAt: this.clock,
+    });
+    return avg;
+  }
+
+  /**
+   * Take an empire-weight sample for a player whose holdings just changed.
+   *
+   * Conquest, founding and abandonment all move the live figure, and the
+   * average has to close off the previous period at the OLD weight before the
+   * new one starts counting.
+   */
+  sampleEmpireWeight(playerId: Uuid): number {
+    return this.store.transaction((tx) => this.sampleWeight(tx, playerId));
   }
 
   /**

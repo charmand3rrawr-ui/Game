@@ -363,3 +363,16 @@ hr { border: none; border-top: 1px solid var(--line); margin: 16px 0; }
 .tier-cell figcaption { font-size: 11.5px; margin-top: 4px; }
 .tier-read { font-style: italic; margin-top: 2px; }
 .tier-sil { font-size: 10.5px; }
+
+/* The Hall: the text layer around the game. */
+.post { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.post:last-child { border-bottom: 0; }
+.faq { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.faq:last-child { border-bottom: 0; }
+.faq summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+.faq p { font-size: 13px; color: var(--text-faint); margin: 8px 0 0; }
+.badge.inline { position: static; display: inline-block; margin-left: 2px; }
+textarea {
+  font: inherit; font-size: 13px; background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px; resize: vertical;
+}

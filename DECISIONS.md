@@ -200,3 +200,67 @@ drift from what the game shows.
 Two overlays are treated as information rather than decoration, as `spec/06 §4`
 requires: damage persists visibly until repaired, and Overdriven is the loudest
 thing on the canvas by design, because Heaven's Envy is meant to be seen.
+
+## D9 — The text layer is one section, and it is genuinely text
+
+`spec/06 §2` lists an Alliance Hub, a Dynasty Hall and a Codex alongside the
+map and settlement screens. The game proper is graphical — the map and the
+settlement are where decisions get made — and everything around it is reading
+and writing: rankings, an inbox, a board, and answers to the questions the
+game raises.
+
+**Decision.** One `Hall` tab with four sections (rankings, messages, forum,
+help) rather than four more tabs. The tab bar is already at what a phone can
+carry, and these belong together: they are all "the world, other than what I
+am building right now".
+
+They stay text on purpose. A leaderboard is a table and a message is prose;
+dressing either up would make them slower to read without making them say more.
+
+Two rules are enforced in the engine rather than the client:
+
+- **A leaderboard is derived on every read, never stored.** A stored rank
+  eventually disagrees with the thing it ranks. `boardSubjects` assembles the
+  whole shard in one pass per table so that stays affordable.
+- **A private board is private on the server.** The alliance board refuses a
+  non-member's read outright, rather than the client not rendering a tab —
+  otherwise "private" means "private from the UI".
+
+Chrono Shard spend is a board like any other, because `spec/04 §11` makes the
+30-day purchase total public on the profile. It is not a wall of shame and not
+a ranking to win; it is simply not private, which is the whole integrity
+mechanic.
+
+The help section answers the things players will otherwise file as bugs — a
+governor that stalled, a breakthrough a rival crashed, an XP award of zero —
+and each answer says why the design is that way rather than only that it is
+intended.
+
+## D10 — Empire weight is charged as the rolling average it was always specified to be
+
+`spec/03 §8`: "Empire Weight `W` is the rolling 30-day average of the sum of
+admin costs of all owned holdings... The rolling average is what stops a player
+shedding territory before a war to spike progression."
+
+The formula was right — its parameter is named `weight30dAvg` — but the callers
+passed a LIVE reading, and the `empireWeightAvg` field the data model defines
+for this was written once at genesis and never maintained. So the safeguard did
+not exist: a player could drop three provinces, fight at a lower XP
+requirement, and take them back the next day. Found while building the empire
+weight leaderboard, which showed zero for everyone.
+
+**Decision.** Keep the average lazily, the way everything else in this engine
+accrues — no tick.
+
+Live weight is piecewise-constant between ownership changes, so a thirty-day
+average needs no history: each player stores the average, the weight HELD since
+the last sample, and when that sample was taken. Advancing blends the average
+toward the held figure in proportion to how much of the window elapsed.
+
+Blending toward the weight held over the period, rather than toward the current
+one, is the whole safeguard, and getting that wrong was the first attempt: with
+the current figure the average collapses onto it as soon as a window has passed
+since the last sample, which hands the dodge straight back. Four tests cover it,
+including that conquest is not instantly taxed either — the delay cuts both
+ways — and that the average is a function of elapsed time rather than of how
+many steps the world was advanced in.

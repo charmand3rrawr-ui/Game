@@ -21,7 +21,7 @@ import {
 
 export type Screen =
   | 'attention' | 'map' | 'settlement' | 'command' | 'formations' | 'research'
-  | 'cultivation' | 'governors' | 'diplomacy' | 'battle' | 'simulator' | 'codex';
+  | 'cultivation' | 'governors' | 'diplomacy' | 'hall' | 'battle' | 'simulator' | 'codex';
 
 export interface Toast {
   id: number;

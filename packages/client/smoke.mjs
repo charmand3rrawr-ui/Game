@@ -25,7 +25,7 @@ const PORT = 4173;
 const SITE = `http://127.0.0.1:${PORT}/`;
 const OUT = new URL('./smoke-output/', import.meta.url).pathname;
 
-const TABS = ['Attention', 'Map', 'Holding', 'Command', 'Forces', 'Research', 'Dao', 'Stewards', 'Pacts', 'Reports', 'Sim', 'Codex'];
+const TABS = ['Attention', 'Map', 'Holding', 'Command', 'Forces', 'Research', 'Dao', 'Stewards', 'Pacts', 'Hall', 'Reports', 'Sim', 'Codex'];
 
 /**
  * Click something in the page body.
@@ -271,6 +271,46 @@ async function main() {
     await page.waitForTimeout(900);
     check('all twelve visual tiers are shown', (await page.locator('.tier-swatch').count()) === 12);
     await page.screenshot({ path: `${OUT}/27-visual-tiers.png` });
+
+    // --- THE TEXT LAYER ---------------------------------------------------
+    // The game is the map and the settlement. This is everything around it,
+    // and it has to be populated on arrival: an empty board and an empty inbox
+    // teach a new player that nobody else is here.
+    await tab(TABS.indexOf('Hall'));
+    await page.waitForTimeout(1200);
+    const hall = await page.locator('.main').innerText();
+    check('rankings explain what they measure', /empire weight/i.test(hall), hall.slice(0, 90));
+
+    // Chrono Shard spend is public, not hidden (spec/04 §11).
+    await clickIn(page.locator('button:has-text("Chrono Shards purchased")').first());
+    await page.waitForTimeout(700);
+    check('shard spend is a public board', /never private|public/i.test(await page.locator('.main').innerText()));
+
+    await clickIn(page.locator('button:has-text("messages")').first());
+    await page.waitForTimeout(900);
+    const inbox = await page.locator('.main').innerText();
+    check('the world has already written to you', (await page.locator('.att').count()) > 0, inbox.slice(0, 80));
+
+    await clickIn(page.locator('.att').first());
+    await page.waitForTimeout(700);
+    check('a message opens and reads as prose', (await page.locator('.main').innerText()).length > 200);
+
+    await clickIn(page.locator('button:has-text("forum")').first());
+    await page.waitForTimeout(900);
+    check('the board is mid-conversation', (await page.locator('.att').count()) > 0);
+    await clickIn(page.locator('.att').first());
+    await page.waitForTimeout(800);
+    check('a thread shows its posts', (await page.locator('.post').count()) > 1);
+    await page.screenshot({ path: `${OUT}/28-forum.png` });
+
+    await clickIn(page.locator('button:has-text("back to the board")').first());
+    await page.waitForTimeout(400);
+    await clickIn(page.locator('button:has-text("help")').first());
+    await page.waitForTimeout(700);
+    const help = await page.locator('.main').innerText();
+    check('help answers the things that look like bugs', /governor stopped building/i.test(help), help.slice(0, 90));
+    check('and says plainly they are not', /working as designed|no, and this/i.test(help));
+    await page.screenshot({ path: `${OUT}/29-help.png` });
 
     // --- the simulator runs the real resolver ----------------------------
     await tab(TABS.indexOf('Sim'));

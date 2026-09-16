@@ -159,6 +159,27 @@ export const joinAllianceSchema = commandBase.extend({
 export const acceptTreatySchema = commandBase;
 export const breakTreatySchema = commandBase;
 
+// ------------------------------------------------- the text layer's commands
+
+export const sendMessageSchema = commandBase.extend({
+  toId: uuid,
+  subject: z.string().min(1).max(120),
+  body: z.string().min(1).max(8_000),
+});
+
+export const readMessageSchema = commandBase;
+export const archiveMessageSchema = commandBase;
+
+export const openThreadSchema = commandBase.extend({
+  scope: z.enum(['world', 'alliance']),
+  title: z.string().min(3).max(140),
+  body: z.string().min(1).max(8_000),
+});
+
+export const replySchema = commandBase.extend({
+  body: z.string().min(1).max(8_000),
+});
+
 export const proposeTreatySchema = commandBase.extend({
   kind: z.enum(['nap', 'trade', 'defensive', 'tribute', 'border', 'war', 'armistice']),
   counterpartyId: uuid,
