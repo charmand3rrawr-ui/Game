@@ -164,8 +164,8 @@ server-side, and every spend is logged permanently.
 | M4 Movement and combat | done |
 | M5 XP, veterancy, empire weight | done |
 | M6 API and realtime | done |
-| M7 Client core | done |
-| M8 Social and governors | done — governors, Seize and the 2× rule; the six spec sheets editable in the UI; alliances and treaties end to end, a signed NAP refused at dispatch on the server |
+| M7 Client core | done — the settlement is a graphical isometric view drawn from the workbook's twelve visual tiers, surrounded by the text layer (Hall: rankings, messages, forum, help) |
+| M8 Social and governors | done — governors, Seize and the 2× rule; the six spec sheets editable in the UI; alliances and treaties end to end, a signed NAP refused at dispatch on the server; leaderboards, messages and a forum, with the alliance board private on the server |
 | M9 Espionage, conquest, cultivation | conquest, loyalty and cultivation done — a tribulation is a scheduled, publicly visible event rivals can crash; espionage is modelled in the schema only |
 | M10 Monetization and integrity | Chrono Shard guardrails and Heaven's Envy done; linked-account detection is a field, not a detector |
 | M11 Live ops | not started |
