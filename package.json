@@ -21,7 +21,8 @@
     "ci": "pnpm run import && pnpm run build && pnpm run typecheck && pnpm run test",
     "assets": "pnpm --filter @ascendance/tools run assets",
     "brief": "pnpm --filter @ascendance/tools run brief",
-    "verify:sprites": "pnpm --filter @ascendance/client run verify:sprites"
+    "verify:sprites": "pnpm --filter @ascendance/client run verify:sprites",
+    "sprites": "pnpm --filter @ascendance/tools run sprites"
   },
   "devDependencies": {
     "typescript": "^5.7.3",

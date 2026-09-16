@@ -309,3 +309,38 @@ hand without reversing the per-row filters, so every reading was noise that
 happened to look plausible — it reported a sprite as drawn before one existed.
 It now reads the canvas's own pixels, which measures the thing in question
 rather than a re-encoding of it.
+
+## D12 — The image model is a pluggable provider, and the key is yours
+
+Claude has no image generation. Neither this process nor a subagent can draw a
+sprite; both are language models. The art programme therefore has to be handed
+to a model that can, which means an external API and a key.
+
+**Decision.** `pnpm run sprites` is a provider-agnostic connector: it takes an
+entry from the work order, composes the prompt, calls the API, post-processes
+the result to the manifest's dimensions, writes it where the renderer looks,
+and records the brief hash. Three providers ship — OpenAI `gpt-image-1`,
+Stability, and Replicate — behind one small interface, so adding a fourth is a
+few lines.
+
+**No key is stored or assumed.** Without one the tool prints which environment
+variable it wants and exits non-zero. It never reports success it did not have,
+which matters more here than usual: a silently empty run against a 5,943-item
+work order would look exactly like progress.
+
+Three things the tool is opinionated about, each for a concrete reason:
+
+- **Transparency is a correctness property, not a preference.** A sprite with a
+  painted background cannot sit on the settlement ground. Where the provider
+  renders real alpha it is asked for directly; where it does not, the prompt
+  demands a flat key colour and the background is cut afterwards.
+- **It refuses to redraw.** Work is picked from what is pending, and pending
+  means no file exists at the path, so the tool is resumable by construction.
+  A silent re-draw is both a wasted spend and a lost revision.
+- **A batch over ten needs saying twice.** Every call is billed and the full
+  programme is nearly six thousand images.
+
+Results are downscaled to the manifest size in a headless browser rather than
+with a native image library: one is already a dependency for the smoke tests,
+and 1024px originals across 5,943 assets would be tens of gigabytes of detail
+no player can see at the size these are drawn.

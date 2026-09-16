@@ -13,6 +13,7 @@ sprites/units/<archetype slug>.png              128x128
 sprites/research/<discipline key>.png            96x96
 ```
 
+- `pnpm run sprites <asset-id>` draws one through an image model (needs your API key).
 - `pnpm run brief <asset-id>` prints the full prompt for one asset.
 - `assets/BRIEF.md` carries the rules every sprite obeys.
 - `pnpm run assets` rebuilds the ledger from what is actually on disk.

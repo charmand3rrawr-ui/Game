@@ -130,6 +130,9 @@ importers:
       '@types/node':
         specifier: ^22.13.1
         version: 22.20.2
+      playwright:
+        specifier: ^1.49.0
+        version: 1.63.0
       tsx:
         specifier: ^4.19.2
         version: 4.23.13
