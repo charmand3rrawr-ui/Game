@@ -14,20 +14,63 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../state/store.js';
 import { api, type AvailableBuilding } from '../state/api.js';
+import { C } from '@ascendance/shared';
 import { Big, Bar, Countdown, Empty, LevelBadge, Num, Pill, duration } from '../ui/bits.js';
 import { Train } from './Train.js';
+import { SettlementCanvas, type Plot } from '../settlement/SettlementCanvas.js';
+import { activityState, damageState, tierForLevel } from '../settlement/visual.js';
 
 export function Settlement(): JSX.Element {
   const { settlement, me, run, busy, go } = useStore();
   const [category, setCategory] = useState('all');
   const [search, setSearch] = useState('');
   const [pane, setPane] = useState<'build' | 'train'>('build');
+  const [plot, setPlot] = useState<number | null>(null);
 
   // EVERY hook runs before any early return. The fogged and empty states below
   // return different trees, and a hook called after one of them would change
   // the hook count between renders — which React rejects outright.
   const available = settlement?.available ?? [];
   const categories = useMemo(() => [...new Set(available.map((a) => a.category))].sort(), [available]);
+  /**
+   * The settlement laid out as plots.
+   *
+   * A building's `plotIndex` is where it physically stands, so the canvas can
+   * draw the same place every time rather than reshuffling on each poll. A job
+   * with shard-hours spent on it is Overdriven, which the canvas is required to
+   * make conspicuous — that is a display of a server fact, not a computed one.
+   */
+  const plots = useMemo<Plot[]>(() => {
+    const queue = settlement?.queue ?? [];
+    const overdrivenKeys = new Set(
+      queue.filter((q) => q.kind === 'building' && q.shardHoursSpent > 0).map((q) => q.targetKey),
+    );
+    // Footprints are packed in order: a building consumes `sizeClass` cells, so
+    // the cells they occupy add up to exactly the server's `plots.used`.
+    let cursor = 0;
+    return (settlement?.buildings ?? []).map((b) => {
+      const span = Math.max(1, b.ref.sizeClass ?? 1);
+      const index = cursor;
+      cursor += span;
+      return {
+      index,
+      span,
+      building: {
+        id: b.id,
+        key: b.buildingKey,
+        name: b.ref.name,
+        category: b.ref.category,
+        level: b.level,
+        damage: b.damage,
+        staffedPct: b.staffedPct,
+        era: b.ref.era,
+        overdriven: overdrivenKeys.has(b.buildingKey),
+        brownout: b.brownoutSince !== undefined,
+      },
+      };
+    });
+  }, [settlement]);
+
   const buildable = useMemo(
     () =>
       available
@@ -71,6 +114,9 @@ export function Settlement(): JSX.Element {
   }
 
   const plotsFree = s.plots.total - s.plots.used;
+  // The HQ grade sets the settlement's standing, which drives the cultivation
+  // aura band on the canvas.
+  const gradeOfHq = Math.max(1, Math.ceil(s.hqLevel / 32));
 
   return (
     <div className="page">
@@ -79,6 +125,30 @@ export function Settlement(): JSX.Element {
         {s.settlement.holdingType.replace(/_/g, ' ')} &middot; population <Num value={s.settlement.population} /> &middot;
         loyalty <Num value={s.settlement.loyalty} />
       </p>
+
+      {/*
+        THE SETTLEMENT ITSELF.
+        Art is authored per tier, so a building visibly rebuilds as it crosses a
+        level band, and the two overlays that carry gameplay — damage, and the
+        conspicuous Overdriven shimmer — are legible without reading a number.
+      */}
+      <SettlementCanvas
+        plots={plots}
+        totalPlots={s.plots.total}
+        usedPlots={s.plots.used}
+        selected={plot}
+        onSelect={setPlot}
+        grade={gradeOfHq}
+        maxGrade={C.MAX_GRADE}
+        biome={s.settlement.layer === 'surface' ? 'temperate' : 'void'}
+      />
+
+      <PlotPanel
+        plots={plots}
+        index={plot}
+        onBuildHere={() => { setPane('build'); setPlot(null); }}
+        onClose={() => setPlot(null)}
+      />
 
       <div className="grid two">
         <div className="card">
@@ -315,6 +385,82 @@ function BuildCard({ b, plotsFree, hqLevel, settlementId }: {
       >
         Have a governor do it (2&times; time)
       </button>
+    </div>
+  );
+}
+
+/**
+ * What you selected on the canvas.
+ *
+ * The canvas answers "what is this place like"; this answers "what is this
+ * building, exactly". Both matter: spec/06 §6 requires the maths be shown, not
+ * summarised, so clicking a building gives you its real numbers and the plain
+ * sentence the workbook attaches to its tier.
+ */
+function PlotPanel({ plots, index, onBuildHere, onClose }: {
+  plots: Plot[];
+  index: number | null;
+  onBuildHere: () => void;
+  onClose: () => void;
+}): JSX.Element | null {
+  if (index === null) return null;
+  const plot = plots.find((p) => p.index === index);
+  const b = plot?.building;
+
+  if (!b) {
+    return (
+      <div className="card plot-panel">
+        <div className="row">
+          <h3 style={{ margin: 0 }}>Plot {index + 1} — empty</h3>
+          <span className="spacer" />
+          <button className="ghost small" onClick={onClose}>Close</button>
+        </div>
+        <p className="faint" style={{ fontSize: 12 }}>
+          Ground, cleared and waiting. Plots do not come back once spent, so what goes here is the decision
+          that shapes this settlement.
+        </p>
+        <button className="primary" style={{ width: '100%' }} onClick={onBuildHere}>Choose a building</button>
+      </div>
+    );
+  }
+
+  const tier = tierForLevel(b.level);
+  const dmg = damageState(b.damage);
+  const act = activityState(b);
+
+  return (
+    <div className="card plot-panel">
+      <div className="row">
+        <h3 style={{ margin: 0 }}>{b.name}</h3>
+        <span className="spacer" />
+        <LevelBadge level={b.level} />
+        <button className="ghost small" onClick={onClose}>Close</button>
+      </div>
+
+      {/* The workbook's own sentence for this tier: what a player is meant to
+          conclude from the silhouette alone. */}
+      <p className="faint" style={{ fontSize: 12.5, marginTop: 6, fontStyle: 'italic' }}>
+        &ldquo;{tier.read}&rdquo;
+      </p>
+      <p className="faint" style={{ fontSize: 11.5, marginTop: -4 }}>
+        Visual tier {tier.tier} of 11 &middot; {tier.silhouette.toLowerCase()} &middot; levels {tier.minLevel}&ndash;{tier.maxLevel}
+      </p>
+
+      <div className="row wrap" style={{ gap: 6 }}>
+        <Pill>{b.category}</Pill>
+        {act === 'overdriven' && <Pill tone="envy">Overdriven — everyone can see this</Pill>}
+        {act === 'idle' && !b.brownout && <Pill tone="warn">idle — understaffed</Pill>}
+        {b.brownout && <Pill tone="danger">Brownout — upkeep unpaid</Pill>}
+        {dmg !== 'pristine' && <Pill tone="danger">{dmg}</Pill>}
+        {act === 'working' && <Pill tone="ok">working</Pill>}
+      </div>
+
+      <dl className="kv" style={{ marginTop: 10 }}>
+        <dt>staffed</dt><dd>{b.staffedPct}%</dd>
+        {b.damage > 0 && <><dt>damage</dt><dd>{b.damage}% — persists until repaired</dd></>}
+        <dt>next tier at</dt>
+        <dd>{tier.tier >= 11 ? 'this is the top tier' : `level ${tier.maxLevel + 1}`}</dd>
+      </dl>
     </div>
   );
 }

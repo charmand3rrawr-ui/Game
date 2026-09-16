@@ -241,6 +241,37 @@ async function main() {
     }
     await page.screenshot({ path: `${OUT}/25-diplomacy.png` });
 
+    // --- THE SETTLEMENT IS A PLACE, NOT A TABLE ---------------------------
+    // The graphical view is the game's main surface. It has to actually draw
+    // something, the plot budget on it must agree with the authoritative one,
+    // and clicking a plot has to select it.
+    await tab(TABS.indexOf('Holding'));
+    await page.waitForTimeout(1000);
+    const canvas = page.locator('.settlement-canvas');
+    check('the settlement renders as a place', (await canvas.count()) === 1);
+    const cbox = await canvas.boundingBox();
+    check('the view has real size', Boolean(cbox) && cbox.width > 200 && cbox.height > 150);
+
+    // Every plot is also a real control, because a canvas is invisible to a
+    // screen reader (spec/06 §6).
+    check('every plot is reachable without the canvas', (await page.locator('.sr-plots button').count()) > 0);
+
+    if (cbox) {
+      await page.mouse.click(cbox.x + cbox.width * 0.5, cbox.y + cbox.height * 0.52);
+      await page.waitForTimeout(600);
+    }
+    const panel = await page.locator('.plot-panel').innerText().catch(() => '');
+    check('clicking a plot selects it', panel.length > 10, panel.slice(0, 60));
+    await page.screenshot({ path: `${OUT}/26-settlement-view.png` });
+
+    // The tier reference is drawn by the same renderer as the game.
+    await tab(TABS.indexOf('Codex'));
+    await page.waitForTimeout(600);
+    await clickIn(page.locator('button:has-text("building")').first());
+    await page.waitForTimeout(900);
+    check('all twelve visual tiers are shown', (await page.locator('.tier-swatch').count()) === 12);
+    await page.screenshot({ path: `${OUT}/27-visual-tiers.png` });
+
     // --- the simulator runs the real resolver ----------------------------
     await tab(TABS.indexOf('Sim'));
     await page.waitForTimeout(800);

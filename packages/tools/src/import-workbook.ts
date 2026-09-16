@@ -173,6 +173,27 @@ interface RefEquipment { key: string; name: string; slot: string; tier: number; 
 interface RefCelestial { name: string; a: string; b: string; c: string }
 interface RefChassis { category: string; outputFormula: string; mechanics: string; scaling: string; vulnerability: string }
 interface RefGovernorTier { key: string; name: string; area: string; commanderLevel: number; covers: string; notes: string }
+/**
+ * One of the twelve authored visual tiers a building passes through.
+ *
+ * 483 buildings x 1,338 levels is 646,000 states, which cannot be authored. Art
+ * is authored per TIER and the level band maps a level onto one (spec/06 §4).
+ * `silhouette` and `read` are the load-bearing columns: they say how the shape
+ * changes and what the player is meant to conclude at a glance, which is what
+ * the renderer has to reproduce.
+ */
+interface RefVisualTier {
+  tier: number;
+  minLevel: number;
+  maxLevel: number;
+  minGrade: number;
+  maxGrade: number;
+  transformation: string;
+  silhouette: string;
+  read: string;
+}
+/** One of the seven overlay axes multiplied over every tier. */
+interface RefVisualOverlay { axis: string; key: string; states: string; renders: string; scope: string }
 interface RefGovernorSpec { sheet: string; key: string; defines: string; behaviour: string; failure: string }
 
 // ============================================================================
@@ -782,6 +803,11 @@ async function main(): Promise<void> {
   const chassis = readChassis(wb.sheet('Category_Chassis'));
   const governorTiers = readGovernorTiers(wb.sheet('Governors'));
   const governorSpecs = readGovernorSpecs(wb.sheet('Governor_Specs'));
+  // Art is authored per tier, not per level, and the renderer composites the
+  // overlays at runtime (spec/06 §4). Both come from the workbook so the client
+  // draws what the art brief describes rather than something invented here.
+  const visualTiers = readVisualTiers(wb.sheet('Visual_Tiers'), MAX_LEVEL);
+  const visualOverlays = readVisualOverlays(wb.sheet('Visual_Overlays'));
 
   // --------------------------------------------------------------- emission
   await mkdir(dirname(OUT_CONSTANTS), { recursive: true });
@@ -792,6 +818,7 @@ async function main(): Promise<void> {
     renderRefData(hash, {
       buildings, archetypes, unitGrades, unitPaths, counter, vetTiers, grades, holdings,
       research, equipment, celestial, chassis, shardDenoms, governorTiers, governorSpecs,
+      visualTiers, visualOverlays,
     }),
     'utf8',
   );
@@ -1681,6 +1708,114 @@ function renderConstants(C: ConstantSet, hash: string): string {
   return lines.join('\n');
 }
 
+/**
+ * The twelve visual tiers, with the level band each covers.
+ *
+ * The bands are contiguous and must stay that way: a level that falls into no
+ * tier is a building the renderer cannot draw, and a gap here would only show
+ * up as an invisible building at some particular level in some particular
+ * settlement. So the bands are checked to run 0..1337 without a hole.
+ */
+function readVisualTiers(s: Sheet, maxLevel: number): RefVisualTier[] {
+  const h = findHeaderRow(s, 'Tier');
+  const idx = {
+    t: s.headerIndex(h, 'Tier'),
+    lb: s.headerIndex(h, 'Level band'),
+    gb: s.headerIndex(h, 'Grade band'),
+    tr: s.headerIndex(h, 'Universal transformation'),
+    si: s.headerIndex(h, 'Silhouette change'),
+    rd: s.headerIndex(h, 'Player read at a glance'),
+  };
+  const out: RefVisualTier[] = [];
+  for (const r of s.dataRows(h)) {
+    const raw = String(r[idx.t] ?? '').trim();
+    if (raw === '' || !r[idx.tr]) break;
+    const tier = Number(raw);
+    if (!Number.isInteger(tier)) break;
+    const level = readBand(String(r[idx.lb] ?? ''), `Visual_Tiers tier ${tier} level band`);
+    const grade = readBand(String(r[idx.gb] ?? ''), `Visual_Tiers tier ${tier} grade band`);
+    out.push({
+      tier,
+      minLevel: level.min, maxLevel: level.max,
+      minGrade: grade.min, maxGrade: grade.max,
+      transformation: String(r[idx.tr] ?? '').trim(),
+      silhouette: String(r[idx.si] ?? '').trim(),
+      read: String(r[idx.rd] ?? '').trim().replace(/^[\u201c"]|[\u201d"]$/g, ''),
+    });
+  }
+  if (out.length !== 12) throw new ImportError(`expected 12 visual tiers, got ${out.length}`);
+
+  // Contiguous and ascending, or some level renders as nothing.
+  if (out[0]!.minLevel !== 0) throw new ImportError('Visual_Tiers: the first tier must start at level 0');
+  for (let i = 1; i < out.length; i++) {
+    const prev = out[i - 1]!;
+    const here = out[i]!;
+    if (here.minLevel !== prev.maxLevel + 1) {
+      throw new ImportError(
+        `Visual_Tiers: tier ${here.tier} starts at ${here.minLevel} but tier ${prev.tier} ends at ${prev.maxLevel} — ` +
+        'a level in the gap would have no art',
+      );
+    }
+  }
+  const top = out[out.length - 1]!;
+  if (top.maxLevel !== maxLevel) {
+    throw new ImportError(`Visual_Tiers: the top tier ends at ${top.maxLevel}, not the level cap ${maxLevel}`);
+  }
+  return out;
+}
+
+/** `25–96`, `0`, or `1281–1337` -> a numeric range. Accepts either dash. */
+function readBand(raw: string, what: string): { min: number; max: number } {
+  const cleaned = raw.replace(/[\u2013\u2014]/g, '-').trim();
+  const m = /^(\d+)\s*(?:-\s*(\d+))?$/.exec(cleaned);
+  if (!m) throw new ImportError(`${what}: cannot read a band from ${JSON.stringify(raw)}`);
+  const min = Number(m[1]);
+  const max = m[2] === undefined ? min : Number(m[2]);
+  if (max < min) throw new ImportError(`${what}: band ${raw} runs backwards`);
+  return { min, max };
+}
+
+/**
+ * The seven overlay axes, each multiplied over every tier.
+ *
+ * Two of them carry GAMEPLAY rather than decoration — damage state and activity
+ * state — and spec/06 §4 requires both stay legible at a glance. They are read
+ * here rather than hard-coded so the renderer's state counts come from the same
+ * place as the art brief.
+ */
+function readVisualOverlays(s: Sheet): RefVisualOverlay[] {
+  const h = findHeaderRow(s, 'Overlay axis');
+  const idx = {
+    a: s.headerIndex(h, 'Overlay axis'),
+    st: s.headerIndex(h, 'States'),
+    r: s.headerIndex(h, 'How it renders'),
+    sc: s.headerIndex(h, 'Shared or per-building'),
+  };
+  const out: RefVisualOverlay[] = [];
+  for (const r of s.dataRows(h)) {
+    const axis = String(r[idx.a] ?? '').trim();
+    if (!axis || !r[idx.r]) break;
+    // The sheet ends with a combinatorics note spread across every column.
+    if (/^Combinatorics/i.test(axis)) break;
+    out.push({
+      axis,
+      key: slug(axis).replace(/_+/g, '_'),
+      states: String(r[idx.st] ?? '').trim(),
+      renders: String(r[idx.r] ?? '').trim(),
+      scope: String(r[idx.sc] ?? '').trim(),
+    });
+  }
+  if (out.length !== 7) throw new ImportError(`expected 7 overlay axes, got ${out.length}`);
+  // The two that carry gameplay must be present under the names the renderer
+  // looks them up by.
+  for (const required of ['damage_state', 'activity_state']) {
+    if (!out.some((o) => o.key === required)) {
+      throw new ImportError(`Visual_Overlays: the gameplay-carrying axis ${required} is missing`);
+    }
+  }
+  return out;
+}
+
 function renderRefData(hash: string, d: Record<string, unknown>): string {
   const lines: string[] = [];
   lines.push(header('refdata.ts', hash));
@@ -1726,6 +1861,10 @@ interface RefTrial {
   lines.push(`export interface RefChassis { category: string; outputFormula: string; mechanics: string; scaling: string; vulnerability: string }`);
   lines.push(`export interface RefShardDenom { name: string; hours: number; source: string }`);
   lines.push(`export interface RefGovernorTier { key: string; name: string; area: string; commanderLevel: number; covers: string; notes: string }`);
+  lines.push(`/** One of the twelve authored visual tiers. \`silhouette\` and \`read\` are what the renderer reproduces. */`);
+  lines.push(`export interface RefVisualTier { tier: number; minLevel: number; maxLevel: number; minGrade: number; maxGrade: number; transformation: string; silhouette: string; read: string }`);
+  lines.push(`/** One of the seven overlay axes multiplied over every tier. */`);
+  lines.push(`export interface RefVisualOverlay { axis: string; key: string; states: string; renders: string; scope: string }`);
   lines.push(`export interface RefGovernorSpec { sheet: string; key: string; defines: string; behaviour: string; failure: string }`);
   lines.push('');
   lines.push('/** role name -> index into COUNTER_MATRIX rows/columns. */');
@@ -1748,6 +1887,8 @@ interface RefTrial {
     ['SHARD_DENOMINATIONS', 'RefShardDenom'],
     ['GOVERNOR_TIERS', 'RefGovernorTier'],
     ['GOVERNOR_SPECS', 'RefGovernorSpec'],
+    ['VISUAL_TIERS', 'RefVisualTier'],
+    ['VISUAL_OVERLAYS', 'RefVisualOverlay'],
   ] as const) {
     const keyMap: Record<string, string> = {
       BUILDINGS: 'buildings',
@@ -1764,6 +1905,8 @@ interface RefTrial {
       SHARD_DENOMINATIONS: 'shardDenoms',
       GOVERNOR_TIERS: 'governorTiers',
       GOVERNOR_SPECS: 'governorSpecs',
+      VISUAL_TIERS: 'visualTiers',
+      VISUAL_OVERLAYS: 'visualOverlays',
     };
     lines.push(`export const ${name}: readonly ${type}[] = ${json(d[keyMap[name]!])};`);
     lines.push('');

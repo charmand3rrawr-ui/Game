@@ -286,3 +286,80 @@ hr { border: none; border-top: 1px solid var(--line); margin: 16px 0; }
 .loading { display: grid; place-items: center; height: 100%; color: var(--text-faint); gap: 10px; }
 
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ==========================================================================
+   The settlement view — the game's main graphical surface
+   ========================================================================== */
+
+.settlement-view {
+  position: relative;
+  margin: 0 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #141a25;
+}
+
+/*
+ * Aspect-ratio rather than a fixed height, so the same view works from a 420px
+ * phone to a desktop without a media query. The canvas sizes itself from its
+ * client box and re-reads it on resize.
+ */
+.settlement-canvas {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  max-height: 62vh;
+  touch-action: manipulation;
+  cursor: pointer;
+}
+
+/*
+ * The plots again, for keyboard and screen-reader users.
+ *
+ * A canvas is opaque to assistive technology, so every plot is also a real
+ * focusable button carrying the same facts as the drawing. Visually hidden, but
+ * NOT display:none — it has to stay reachable by Tab, and it becomes visible on
+ * focus so a sighted keyboard user can see where they are.
+ */
+.sr-plots {
+  position: absolute;
+  inset: auto auto 0 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+.sr-plots button {
+  position: absolute;
+  left: -9999px;
+  font-size: 12px;
+}
+.sr-plots button:focus-visible {
+  position: static;
+  left: auto;
+  display: block;
+  width: max-content;
+  margin: 4px;
+  outline: 2px solid var(--accent);
+}
+.sr-plots:focus-within {
+  width: auto;
+  height: auto;
+  inset: auto 8px 8px auto;
+  background: rgba(10, 13, 18, 0.92);
+  border-radius: 8px;
+  padding: 4px;
+}
+
+.plot-panel { border-color: var(--accent); }
+
+/* The visual-tier reference: the same renderer, twelve times. */
+.tier-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 2px; }
+.tier-cell { margin: 0; padding: 8px; background: #141a25; }
+.tier-swatch { display: block; width: 100%; height: 118px; }
+.tier-cell figcaption { font-size: 11.5px; margin-top: 4px; }
+.tier-read { font-style: italic; margin-top: 2px; }
+.tier-sil { font-size: 10.5px; }

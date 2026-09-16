@@ -56,8 +56,20 @@ export interface MeResponse {
 }
 
 export interface SettlementDetail {
-  settlement: { id: string; name: string; holdingType: string; population: number; happiness: number; loyalty: number; ownerId?: string };
-  buildings: { id: string; buildingKey: string; level: number; damage: number; staffedPct: number; ref: BuildingRef }[];
+  settlement: {
+    id: string; name: string; holdingType: string; population: number;
+    happiness: number; loyalty: number; ownerId?: string;
+    /** Surface, orbital, void — drives the canvas biome pass. */
+    layer: string;
+  };
+  buildings: {
+    id: string; buildingKey: string; level: number; damage: number; staffedPct: number;
+    /** Which plot it stands on — the canvas lays the settlement out by this. */
+    plotIndex: number;
+    /** Set while upkeep is unpaid: output halved, shedding a level a day after 72h. */
+    brownoutSince?: string;
+    ref: BuildingRef;
+  }[];
   queue: QueueItemDto[];
   stockpiles: { resourceKey: string; amount: string; capacity: string }[];
   production: { buildingName: string; resourceKey: string; ratePerHour: number; staffedPct: number; adjacencyBonus: number; brownout: boolean }[];

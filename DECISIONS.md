@@ -168,3 +168,35 @@ holdings). A secondary index would fix it, but it would have to be unwound by
 the journal too, and the path already handles roughly 16,000 commands a second.
 Postgres indexes this properly; the in-memory store is deliberately the simple
 one (D4).
+
+## D8 — Buildings are drawn procedurally from the workbook's tier data
+
+`spec/06 §4` and the `Visual_Tiers` sheet describe a real art programme: twelve
+authored tiers per building, each with a silhouette instruction, multiplied by
+seven overlay axes, with each of the 483 buildings carrying its own `art`
+description and a named "Signature" element. That is an art budget, not a
+coding task, and none of it existed as data in the build — the importer was not
+reading either visual sheet.
+
+**Decision.** Import both sheets, and render buildings as procedural isometric
+geometry composited from exactly that data: `visual.ts` turns a level into a
+tier and a tier into geometry, and the canvas only executes it.
+
+This buys the thing the tier system exists for. Crossing level 24 into 25
+visibly rebuilds a building, because `Visual_Tiers` says tier 2 "doubles in
+height; regular geometry" — so the upgrade a player just paid for is something
+they can see, and the sheet decided that, not the renderer.
+
+The importer refuses a workbook whose tier bands leave a gap, because a level
+with no tier is a building that draws as nothing.
+
+**What this is not.** It is not the authored art. Swapping in a sprite atlas
+later is a change to the canvas, not to the model, because everything that
+DECIDES what a building looks like is already separated into pure functions
+tested against the workbook (`visual.test.ts`), and the Codex's tier reference
+is drawn by the same renderer rather than illustrated separately — so it cannot
+drift from what the game shows.
+
+Two overlays are treated as information rather than decoration, as `spec/06 §4`
+requires: damage persists visibly until repaired, and Overdriven is the loudest
+thing on the canvas by design, because Heaven's Envy is meant to be seen.

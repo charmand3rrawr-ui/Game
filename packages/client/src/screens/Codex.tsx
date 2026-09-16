@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { TierStrip } from '../settlement/TierStrip.js';
 import { C, HOLDINGS, BUILDINGS, ROSTER, CONSTANT_META } from '@ascendance/shared';
 import { useStore, runningLocally } from '../state/store.js';
 import { Big, Num, Pill } from '../ui/bits.js';
@@ -15,7 +16,7 @@ import { TierLadder } from './Formations.js';
 
 export function Codex(): JSX.Element {
   const { meta } = useStore();
-  const [tab, setTab] = useState<'rules' | 'holdings' | 'veterancy' | 'balance'>('rules');
+  const [tab, setTab] = useState<'rules' | 'holdings' | 'veterancy' | 'building' | 'balance'>('rules');
 
   useEffect(() => { document.title = 'Ascendance — Codex'; }, []);
 
@@ -23,7 +24,7 @@ export function Codex(): JSX.Element {
     <div className="page">
       <h1>Codex</h1>
       <div className="row wrap" style={{ gap: 6, marginBottom: 14 }}>
-        {(['rules', 'holdings', 'veterancy', 'balance'] as const).map((t) => (
+        {(['rules', 'holdings', 'veterancy', 'building', 'balance'] as const).map((t) => (
           <button key={t} className={`small ${tab === t ? 'primary' : 'ghost'}`} onClick={() => setTab(t)}>{t}</button>
         ))}
       </div>
@@ -31,6 +32,18 @@ export function Codex(): JSX.Element {
       {tab === 'rules' && <Rules />}
       {tab === 'holdings' && <Holdings />}
       {tab === 'veterancy' && <><h2>The veterancy ladder</h2><TierLadder /></>}
+      {tab === 'building' && (
+        <>
+          <h2>How a building grows</h2>
+          <p className="faint" style={{ fontSize: 12.5, marginTop: -4 }}>
+            Art is authored per tier, not per level — 483 buildings across 1,338 levels is 646,000 states
+            that nobody could draw. A building keeps the same shape inside a tier and visibly rebuilds when
+            it crosses into the next one. These are drawn by the same renderer the settlement uses, so this
+            is what you will actually see.
+          </p>
+          <TierStrip />
+        </>
+      )}
       {tab === 'balance' && <Balance meta={meta} />}
     </div>
   );
