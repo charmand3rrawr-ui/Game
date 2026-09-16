@@ -28,7 +28,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { buildManifest, composeBrief, statusOf, type AssetEntry } from './build-assets.js';
 import { main as rebuildLedger } from './build-assets.js';
 
@@ -42,6 +42,18 @@ const DRAWN = join(ROOT, 'assets/drawn.json');
 
 export interface Provider {
   name: string;
+  /**
+   * True if this provider cannot produce a shippable sprite.
+   *
+   * A preview provider is for reading the brief back — checking that a
+   * description produces the building you meant — not for filling the game.
+   * Its output never goes to a sprite path, because a watermarked JPEG sitting
+   * at `sprites/buildings/1_farm/t1.png` would look like finished art, count
+   * as integrated in the ledger, and ship.
+   */
+  previewOnly?: boolean;
+  /** Why it cannot ship, stated to the operator every time it runs. */
+  previewReason?: string;
   /** The environment variable carrying its key. */
   envVar: string;
   /** What to tell the user if the key is missing. */
@@ -167,7 +179,40 @@ const REPLICATE: Provider = {
   },
 };
 
-export const PROVIDERS: Provider[] = [OPENAI, STABILITY, REPLICATE];
+/**
+ * Free, keyless, and preview-only.
+ *
+ * Tested September 2026: the images are genuinely good — a legible isometric
+ * building in the right style, from these briefs, with no account at all. What
+ * it cannot do is produce a SPRITE. It returns JPEG regardless of the format
+ * requested, so there is no alpha channel and nothing to key out; it bakes in
+ * ground and a drop shadow that the renderer draws for itself; and it stamps a
+ * watermark that `nologo` will not remove without registering, at which point
+ * it is not keyless either.
+ *
+ * So it is wired up for what it IS good for: reading a brief back before
+ * spending money on it. Output goes to `assets/previews/`, never to a sprite
+ * path.
+ */
+const POLLINATIONS: Provider = {
+  name: 'pollinations',
+  envVar: 'POLLINATIONS_TOKEN',
+  hint: 'no key needed — this one is free and keyless',
+  nativeTransparency: false,
+  previewOnly: true,
+  previewReason:
+    'returns watermarked JPEG with baked-in ground and shadow, so it cannot produce a usable sprite',
+  async generate(prompt, entry, _key) {
+    const url =
+      `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.slice(0, 1800))}` +
+      `?width=1024&height=1024&model=flux&nologo=true&seed=${parseInt(entry.briefHash.slice(0, 6), 16)}`;
+    const res = await fetch(url);
+    await expectOk(res, 'pollinations');
+    return Buffer.from(await res.arrayBuffer());
+  },
+};
+
+export const PROVIDERS: Provider[] = [OPENAI, STABILITY, REPLICATE, POLLINATIONS];
 
 // ============================================================================
 // Prompt
@@ -345,6 +390,14 @@ const PRICE_PER_IMAGE: Record<string, { label: string; usd: number }[]> = {
 
 function estimate(entries: AssetEntry[], provider: Provider): void {
   const n = entries.length;
+  if (provider.previewOnly) {
+    console.log(
+      `${provider.name} is free and keyless, so ${n} preview(s) cost nothing.\n\n` +
+      `It cannot produce shippable sprites — it ${provider.previewReason}.\n` +
+      'Use it to read briefs back; price the real run against another provider.',
+    );
+    return;
+  }
   const rows = PRICE_PER_IMAGE[provider.name] ?? [];
   console.log(`${n} sprite(s) selected, with ${provider.name}:\n`);
   for (const r of rows) {
@@ -381,7 +434,7 @@ export async function main(argv: string[]): Promise<void> {
   const estimating = argv.includes('--estimate');
 
   const key = process.env[provider.envVar];
-  if (!key && !estimating) {
+  if (!key && !estimating && !provider.previewOnly) {
     console.error(
       `No API key. ${provider.name} needs ${provider.envVar}.\n\n` +
       `  export ${provider.envVar}=...   # ${provider.hint}\n\n` +
@@ -436,8 +489,20 @@ export async function main(argv: string[]): Promise<void> {
   );
 
   let drawnThisRun = 0;
+  if (provider.previewOnly) {
+    console.log(
+      `${provider.name} is PREVIEW ONLY — it ${provider.previewReason}.\n` +
+      'Output goes to assets/previews/ and is never treated as art.\n' +
+      'Use it to read a brief back before paying to draw it properly.\n',
+    );
+  }
+
   for (const entry of queue) {
-    const file = join(PUBLIC, entry.path);
+    // A preview never lands on a sprite path. One that did would look like
+    // finished art, count as integrated, and ship.
+    const file = provider.previewOnly
+      ? join(ROOT, 'assets/previews', `${entry.id.replace(/\//g, '_')}.jpg`)
+      : join(PUBLIC, entry.path);
     if (existsSync(file) && !force) {
       console.log(`  skip  ${entry.id} — already drawn`);
       continue;
@@ -461,16 +526,22 @@ export async function main(argv: string[]): Promise<void> {
       // Unreachable without a key: the guard above returns unless estimating,
       // and estimating returns before this loop.
       const raw = await provider.generate(prompt, entry, key!);
-      const png = await postProcess(raw, entry, !provider.nativeTransparency);
+      // A preview is looked at, not composited, so it is kept as returned.
+      const png = provider.previewOnly
+        ? raw
+        : await postProcess(raw, entry, !provider.nativeTransparency);
       await mkdir(dirname(file), { recursive: true });
       await writeFile(file, png);
 
       // Record the brief it was drawn against BEFORE announcing success, so an
       // interrupted run never leaves art that the ledger cannot account for.
-      drawn[entry.id] = entry.briefHash;
-      await writeFile(DRAWN, JSON.stringify(drawn, null, 2) + '\n', 'utf8');
+      if (!provider.previewOnly) {
+        drawn[entry.id] = entry.briefHash;
+        await writeFile(DRAWN, JSON.stringify(drawn, null, 2) + '\n', 'utf8');
+      }
       console.log(
-        `ok (${(png.length / 1024).toFixed(0)} kB) -> ${entry.path}` +
+        `ok (${(png.length / 1024).toFixed(0)} kB) -> ${
+          provider.previewOnly ? relative(ROOT, file) : entry.path}` +
         (lastUsage.quality ? `  [${lastUsage.quality}${lastUsage.tokens ? `, ${lastUsage.tokens} tokens` : ''}]` : ''),
       );
 
@@ -488,7 +559,7 @@ export async function main(argv: string[]): Promise<void> {
     }
   }
 
-  if (!dryRun) {
+  if (!dryRun && !provider.previewOnly) {
     console.log('');
     await rebuildLedger();
   }

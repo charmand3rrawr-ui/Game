@@ -6,3 +6,4 @@ coverage/
 .env
 .env.local
 packages/client/smoke-output/
+assets/previews/
