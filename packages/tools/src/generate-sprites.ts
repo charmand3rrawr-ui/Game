@@ -66,11 +66,16 @@ const OPENAI: Provider = {
   // a sprite with a painted background cannot sit on the settlement ground.
   nativeTransparency: true,
   async generate(prompt, _entry, key) {
+    // Configurable, and NOT defaulted to gpt-image-1: that model is retired on
+    // 23 October 2026, and a hardcoded id would turn every scheduled run into a
+    // silent failure on a date nobody was watching for. Override with
+    // OPENAI_IMAGE_MODEL when a newer one lands.
+    const model = process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-1.5';
     const res = await fetch('https://api.openai.com/v1/images/generations', {
       method: 'POST',
       headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
       body: JSON.stringify({
-        model: 'gpt-image-1',
+        model,
         prompt,
         n: 1,
         size: '1024x1024',
@@ -287,6 +292,48 @@ function commitOne(entry: AssetEntry): void {
   }
 }
 
+/**
+ * Indicative per-image prices, September 2026.
+ *
+ * Deliberately a table rather than a live lookup: providers change prices and
+ * this is a planning figure, not a bill. Check the provider before committing
+ * to a large run — and note the retry multiplier below, which matters more than
+ * the unit price does.
+ */
+const PRICE_PER_IMAGE: Record<string, { label: string; usd: number }[]> = {
+  openai: [
+    { label: 'low quality', usd: 0.02 },
+    { label: 'medium quality', usd: 0.07 },
+    { label: 'high quality', usd: 0.19 },
+  ],
+  stability: [{ label: 'Stable Image Core', usd: 0.03 }],
+  replicate: [{ label: 'FLUX schnell', usd: 0.003 }],
+};
+
+function estimate(entries: AssetEntry[], provider: Provider): void {
+  const n = entries.length;
+  const rows = PRICE_PER_IMAGE[provider.name] ?? [];
+  console.log(`${n} sprite(s) selected, with ${provider.name}:\n`);
+  for (const r of rows) {
+    const once = n * r.usd;
+    console.log(
+      `  ${r.label.padEnd(20)} $${once.toFixed(2).padStart(10)} first pass` +
+      `   $${(once * 2.5).toFixed(2).padStart(10)} allowing for retries`,
+    );
+  }
+  console.log(
+    '\nThe retry column assumes 2.5 attempts per usable sprite. Six thousand images held to one\n' +
+    'camera angle, one light direction and a clean alpha edge will not all land first time, and\n' +
+    'that multiplier moves the total far more than the choice of quality tier does.',
+  );
+  if (!provider.nativeTransparency) {
+    console.log(
+      `\n${provider.name} does not render real transparency, so backgrounds are keyed out of a flat\n` +
+      'colour afterwards. Cheaper per image, lossier at the edges — which on a sprite is where it shows.',
+    );
+  }
+}
+
 export async function main(argv: string[]): Promise<void> {
   const wanted = flag(argv, '--provider') ?? PROVIDERS[0]!.name;
   const provider = PROVIDERS.find((p) => p.name === wanted);
@@ -296,8 +343,12 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
 
+  // An estimate needs no key: the question "what would this cost" should be
+  // answerable before deciding whether to get one.
+  const estimating = argv.includes('--estimate');
+
   const key = process.env[provider.envVar];
-  if (!key) {
+  if (!key && !estimating) {
     console.error(
       `No API key. ${provider.name} needs ${provider.envVar}.\n\n` +
       `  export ${provider.envVar}=...   # ${provider.hint}\n\n` +
@@ -312,7 +363,9 @@ export async function main(argv: string[]): Promise<void> {
   const drawn = await readDrawn();
   const only = argv.find((a) => !a.startsWith('--') && a.includes('/'));
   const kind = flag(argv, '--kind');
-  const limit = Number(flag(argv, '--limit') ?? 1);
+  // One at a time by default when drawing; an estimate covers everything
+  // selected, since a cost for a single sprite answers nothing useful.
+  const limit = Number(flag(argv, '--limit') ?? (argv.includes('--estimate') ? Number.MAX_SAFE_INTEGER : 1));
   const force = argv.includes('--force');
   const dryRun = argv.includes('--dry-run');
   const commit = argv.includes('--commit');
@@ -322,6 +375,11 @@ export async function main(argv: string[]): Promise<void> {
     : entries.filter((e) => force || statusOf(e, new Map(Object.entries(drawn))) !== 'integrated');
   if (kind) queue = queue.filter((e) => e.kind === kind);
   queue = queue.slice(0, Math.max(1, limit));
+
+  if (estimating) {
+    estimate(queue, provider);
+    return;
+  }
 
   if (queue.length === 0) {
     console.log('nothing to draw — every asset in that selection already has a file');
@@ -367,7 +425,9 @@ export async function main(argv: string[]): Promise<void> {
     drawnThisRun++;
     process.stdout.write(`  draw  ${entry.id} … `);
     try {
-      const raw = await provider.generate(prompt, entry, key);
+      // Unreachable without a key: the guard above returns unless estimating,
+      // and estimating returns before this loop.
+      const raw = await provider.generate(prompt, entry, key!);
       const png = await postProcess(raw, entry, !provider.nativeTransparency);
       await mkdir(dirname(file), { recursive: true });
       await writeFile(file, png);
