@@ -111,6 +111,18 @@ function hash16(s: string): number {
 export class Scheduler {
   private readonly handlers: Handlers = {};
 
+  /**
+   * Called with each event's scheduled instant just before its handler runs.
+   *
+   * The World uses this to keep its own clock in step with the drain. Without
+   * it, a command a handler issues — a governor starting its next job the
+   * moment the last one lands — is costed and timed from the instant the drain
+   * STARTED, which puts its completion in the past and makes it finish for
+   * free. The handler's own `now` was always right; what was stale was
+   * everything the handler called into.
+   */
+  onInstant?: (t: Millis) => void;
+
   constructor(
     private readonly store: Store,
     readonly ids: IdFactory,
@@ -197,6 +209,7 @@ export class Scheduler {
       }
 
       try {
+        this.onInstant?.(due.executeAt);
         this.store.transaction((tx) => {
           // The handler mutates state, appends to the event log, and may
           // schedule follow-on events inside this same transaction.

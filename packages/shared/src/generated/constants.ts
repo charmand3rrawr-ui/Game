@@ -112,6 +112,11 @@ export const CONSTANT_META: Readonly<Record<string, ConstantMeta>> = Object.free
   QI_PER_SPIRIT_VEIN: Object.freeze({ value: 12, provenance: 'assumed', ref: "Cultivation!Qi names Spirit Vein tiles as a source without a rate", note: "Qi per hour per Spirit Vein tile, which is what makes those tiles worth fighting over." }),
   QI_IDLE_PER_HOUR: Object.freeze({ value: 2, provenance: 'assumed', ref: "Cultivation!Qi lists idle meditation as a source without a rate", note: "Qi per hour from meditation alone, so a player with no cultivation buildings still advances, slowly, and the realm ladder is never completely shut to them." }),
   CULTIVATION_AURA_PER_GRADE: Object.freeze({ value: 0.004, provenance: 'assumed', ref: "Cultivation!Balance caps says realm bonuses fold into the joint cap without giving a per-grade rate", note: "Combat multiplier per cultivation grade, inside the +40% joint cap. Deliberately small: Cultivation!Balance caps is explicit that realms primarily gate content rather than grant power." }),
+  ALLIANCE_MAX_MEMBERS: Object.freeze({ value: 60, provenance: 'spec', ref: "spec/04 §7", note: "Alliances hold up to 60 members." }),
+  NAP_NOTICE_MS: Object.freeze({ value: 172800000, provenance: 'spec', ref: "spec/04 §7 · \"early exit requires 48h public notice\"", note: "A non-aggression pact takes this long to leave. Betrayal stays allowed; it is the surprise that is priced." }),
+  REPUTATION_NAP_BREAK: Object.freeze({ value: 25, provenance: 'assumed', ref: "spec/04 §7 says breaches cost reputation without giving an amount", note: "Reputation lost for breaking a non-aggression pact. Reputation never BLOCKS an action — it prices one — and it feeds karma-weighted tribulations, so an oathbreaker pays in the cultivation game as well as the diplomatic one." }),
+  REPUTATION_TREATY_BREAK: Object.freeze({ value: 10, provenance: 'assumed', ref: "spec/04 §7 says breaches cost reputation without giving an amount", note: "Reputation lost for breaking any other treaty. Lower than a NAP: a trade pact is a deal, a non-aggression pact is a promise not to kill someone." }),
+  CONVOY_SPEED: Object.freeze({ value: 12, provenance: 'assumed', ref: "spec/04 §2 lists convoy types by era (carts, wagons, rail, void haulers) without speeds", note: "Map units per hour for a haul convoy. Slower than an army on purpose: resources moving are resources exposed, and that exposure is what makes supply-line interdiction meaningful." }),
   GOVERNOR_TIME_MULT: Object.freeze({ value: 2, provenance: 'spec', ref: "spec/04 §6 · the 2x rule", note: "Anything a governor initiates takes twice as long. That field is the whole mechanic." }),
   PLAYER_TIME_MULT: Object.freeze({ value: 1, provenance: 'spec', ref: "spec/04 §6", note: "" }),
   CANCEL_REFUND_PCT: Object.freeze({ value: 0.8, provenance: 'spec', ref: "spec/05 §2 · DELETE /v1/queue/:itemId", note: "Cancelling refunds 80% of resources." }),
@@ -144,6 +149,10 @@ export const CONSTANT_META: Readonly<Record<string, ConstantMeta>> = Object.free
   WORKERS_PER_LEVEL: Object.freeze({ value: 0.5, provenance: 'assumed', ref: "Building_Framework says buildings draw Workers from population without a rate", note: "Half a worker per level per plot, so understaffing is the normal state of a growing settlement." }),
   UPKEEP_COIN_PER_LEVEL: Object.freeze({ value: 0.05, provenance: 'assumed', ref: "spec/04 §1 states Era II+ Coin upkeep without a rate", note: "Coin per level per plot from Era II. Sized so a settlement of ordinary buildings pays its own way and an over-built one does not, which is what makes Brownout a real pressure." }),
   UPKEEP_POWER_PER_LEVEL: Object.freeze({ value: 0.02, provenance: 'assumed', ref: "spec/04 §1 states Era IV+ Electricity draw without a rate", note: "Electricity per level per plot from Era IV. Lower than the Coin rate because power is a second, narrower constraint layered on top rather than a replacement for it." }),
+  POSTURE_FORTIFY_BONUS: Object.freeze({ value: 0.2, provenance: 'assumed', ref: "Governor_Specs describes Turtle/Hold/Sally without giving their modifiers", note: "Defensive bonus for Turtle. Large enough that the published failure mode — \"defaults to Turtle, which loses winnable fights and wins unwinnable ones slowly\" — is literally true." }),
+  POSTURE_SALLY_PENALTY: Object.freeze({ value: 0.15, provenance: 'assumed', ref: "Governor_Specs describes Sally without giving its modifier", note: "Defence given up by meeting an attacker in the field instead of holding the walls." }),
+  HAUL_FLOOR_PER_DAY: Object.freeze({ value: 5000, provenance: 'assumed', ref: "Governor_Specs states stockpile floors in days without defining a day of consumption", note: "Resources one day of a stockpile floor reserves. Until settlement consumption is modelled, a floor in days is read against this." }),
+  HAUL_MIN_CARGO: Object.freeze({ value: 2000, provenance: 'assumed', ref: "no published minimum convoy size", note: "Smallest surplus worth dispatching a convoy for. Without it a resource policy produces a trickle of interceptable haulers rather than a supply line." }),
   ZOC_SPEED_MULT: Object.freeze({ value: 0.6, provenance: 'spec', ref: "spec/03 §4 · zone of control", note: "0.6x speed inside a hostile fortification radius." }),
   ATTRITION_PCT: Object.freeze({ value: 0.03, provenance: 'spec', ref: "spec/03 §4 · supply", note: "3% of strength per tick beyond supply range, escalating." }),
   ATTRITION_INTERVAL_MS: Object.freeze({ value: 3600000, provenance: 'spec', ref: "spec/03 §4", note: "One attrition tick per hour out of supply." }),
@@ -331,6 +340,16 @@ export const C = Object.freeze({
   QI_IDLE_PER_HOUR: 2,
   /** Combat multiplier per cultivation grade, inside the +40% joint cap. Deliberately small: Cultivation!Balance caps is explicit that realms primarily gate content rather than grant power. — [ASSUMED] Cultivation!Balance caps says realm bonuses fold into the joint cap without giving a per-grade rate */
   CULTIVATION_AURA_PER_GRADE: 0.004,
+  /** Alliances hold up to 60 members. — spec/04 §7 */
+  ALLIANCE_MAX_MEMBERS: 60,
+  /** A non-aggression pact takes this long to leave. Betrayal stays allowed; it is the surprise that is priced. — spec/04 §7 · "early exit requires 48h public notice" */
+  NAP_NOTICE_MS: 172800000,
+  /** Reputation lost for breaking a non-aggression pact. Reputation never BLOCKS an action — it prices one — and it feeds karma-weighted tribulations, so an oathbreaker pays in the cultivation game as well as the diplomatic one. — [ASSUMED] spec/04 §7 says breaches cost reputation without giving an amount */
+  REPUTATION_NAP_BREAK: 25,
+  /** Reputation lost for breaking any other treaty. Lower than a NAP: a trade pact is a deal, a non-aggression pact is a promise not to kill someone. — [ASSUMED] spec/04 §7 says breaches cost reputation without giving an amount */
+  REPUTATION_TREATY_BREAK: 10,
+  /** Map units per hour for a haul convoy. Slower than an army on purpose: resources moving are resources exposed, and that exposure is what makes supply-line interdiction meaningful. — [ASSUMED] spec/04 §2 lists convoy types by era (carts, wagons, rail, void haulers) without speeds */
+  CONVOY_SPEED: 12,
   /** Anything a governor initiates takes twice as long. That field is the whole mechanic. — spec/04 §6 · the 2x rule */
   GOVERNOR_TIME_MULT: 2,
   /** spec/04 §6 */
@@ -395,6 +414,14 @@ export const C = Object.freeze({
   UPKEEP_COIN_PER_LEVEL: 0.05,
   /** Electricity per level per plot from Era IV. Lower than the Coin rate because power is a second, narrower constraint layered on top rather than a replacement for it. — [ASSUMED] spec/04 §1 states Era IV+ Electricity draw without a rate */
   UPKEEP_POWER_PER_LEVEL: 0.02,
+  /** Defensive bonus for Turtle. Large enough that the published failure mode — "defaults to Turtle, which loses winnable fights and wins unwinnable ones slowly" — is literally true. — [ASSUMED] Governor_Specs describes Turtle/Hold/Sally without giving their modifiers */
+  POSTURE_FORTIFY_BONUS: 0.2,
+  /** Defence given up by meeting an attacker in the field instead of holding the walls. — [ASSUMED] Governor_Specs describes Sally without giving its modifier */
+  POSTURE_SALLY_PENALTY: 0.15,
+  /** Resources one day of a stockpile floor reserves. Until settlement consumption is modelled, a floor in days is read against this. — [ASSUMED] Governor_Specs states stockpile floors in days without defining a day of consumption */
+  HAUL_FLOOR_PER_DAY: 5000,
+  /** Smallest surplus worth dispatching a convoy for. Without it a resource policy produces a trickle of interceptable haulers rather than a supply line. — [ASSUMED] no published minimum convoy size */
+  HAUL_MIN_CARGO: 2000,
   /** 0.6x speed inside a hostile fortification radius. — spec/03 §4 · zone of control */
   ZOC_SPEED_MULT: 0.6,
   /** 3% of strength per tick beyond supply range, escalating. — spec/03 §4 · supply */
@@ -415,4 +442,4 @@ export type Constants = typeof C;
 export const BALANCE_REVISION = "910ad42c80c5a25e0bd3fc2647d71b985f8d7175f2bf88b6a6ced0769d55b2f4" as const;
 
 /** Constants the balance owner still has to confirm (spec/00 §5). */
-export const ASSUMED_CONSTANTS: readonly string[] = Object.freeze(["MORALE_EXP", "RANGED_PHASE_WEIGHT", "WALL_GRADES_PER_SIEGE_SHARE", "AMBUSH_MAX_CHANCE", "AMBUSH_PER_CONCEALMENT", "AMBUSH_PER_SCOUTING", "AMBUSH_PENALTY", "AMBUSH_BONUS", "PURSUIT_PER_LOG_RATIO", "PURSUIT_MAX", "SCREEN_EXPOSURE", "MUNITIONS_PER_DAMAGE", "GARRISON_HP_PER_WALL_GRADE", "CARRY_PER_UNIT", "HIDDEN_CELLAR", "CAPTURED_LOYALTY", "STARTING_MUNITIONS", "ENVY_MIN_SPEND_FLOOR", "RESEARCH_COST_PER_LEVEL", "TRAIN_COST_PER_UPKEEP", "MILITARY_QUEUE_SLOTS", "TRAIN_BATCH_MAX", "TRAIN_SPEED_PER_GRADE", "TRIBULATION_WINDOW_MS", "TRIBULATION_BASE_SUCCESS", "TRIBULATION_PER_DEBT_TIER", "TRIBULATION_PER_REPUTATION", "TRIBULATION_CRASH_PENALTY", "TRIBULATION_FAILURE_QI_KEPT", "QI_PER_CULTIVATION_BUILDING", "QI_PER_SPIRIT_VEIN", "QI_IDLE_PER_HOUR", "CULTIVATION_AURA_PER_GRADE", "CULTURE_PRESSURE_K", "CULTURE_PRESSURE_CAP", "ATTRITION_ESCALATION", "TEMPORAL_DEBT_HOURS_PER_TIER", "STATECRAFT_PER_POINT", "HQ_FACTOR_PER_GRADE", "HQ_FACTOR_CAP", "ADJACENCY_SYNERGY", "ADJACENCY_SAME_CATEGORY", "ADJACENCY_CAP", "BASE_STORAGE", "STORAGE_PER_LOGISTICS", "WORKERS_PER_LEVEL", "UPKEEP_COIN_PER_LEVEL", "UPKEEP_POWER_PER_LEVEL"]);
+export const ASSUMED_CONSTANTS: readonly string[] = Object.freeze(["MORALE_EXP", "RANGED_PHASE_WEIGHT", "WALL_GRADES_PER_SIEGE_SHARE", "AMBUSH_MAX_CHANCE", "AMBUSH_PER_CONCEALMENT", "AMBUSH_PER_SCOUTING", "AMBUSH_PENALTY", "AMBUSH_BONUS", "PURSUIT_PER_LOG_RATIO", "PURSUIT_MAX", "SCREEN_EXPOSURE", "MUNITIONS_PER_DAMAGE", "GARRISON_HP_PER_WALL_GRADE", "CARRY_PER_UNIT", "HIDDEN_CELLAR", "CAPTURED_LOYALTY", "STARTING_MUNITIONS", "ENVY_MIN_SPEND_FLOOR", "RESEARCH_COST_PER_LEVEL", "TRAIN_COST_PER_UPKEEP", "MILITARY_QUEUE_SLOTS", "TRAIN_BATCH_MAX", "TRAIN_SPEED_PER_GRADE", "TRIBULATION_WINDOW_MS", "TRIBULATION_BASE_SUCCESS", "TRIBULATION_PER_DEBT_TIER", "TRIBULATION_PER_REPUTATION", "TRIBULATION_CRASH_PENALTY", "TRIBULATION_FAILURE_QI_KEPT", "QI_PER_CULTIVATION_BUILDING", "QI_PER_SPIRIT_VEIN", "QI_IDLE_PER_HOUR", "CULTIVATION_AURA_PER_GRADE", "REPUTATION_NAP_BREAK", "REPUTATION_TREATY_BREAK", "CONVOY_SPEED", "CULTURE_PRESSURE_K", "CULTURE_PRESSURE_CAP", "ATTRITION_ESCALATION", "TEMPORAL_DEBT_HOURS_PER_TIER", "STATECRAFT_PER_POINT", "HQ_FACTOR_PER_GRADE", "HQ_FACTOR_CAP", "ADJACENCY_SYNERGY", "ADJACENCY_SAME_CATEGORY", "ADJACENCY_CAP", "BASE_STORAGE", "STORAGE_PER_LOGISTICS", "WORKERS_PER_LEVEL", "UPKEEP_COIN_PER_LEVEL", "UPKEEP_POWER_PER_LEVEL", "POSTURE_FORTIFY_BONUS", "POSTURE_SALLY_PENALTY", "HAUL_FLOOR_PER_DAY", "HAUL_MIN_CARGO"]);

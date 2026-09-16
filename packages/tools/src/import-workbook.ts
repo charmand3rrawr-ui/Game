@@ -172,6 +172,8 @@ interface RefResearch {
 interface RefEquipment { key: string; name: string; slot: string; tier: number; quality: string; bonusPct: number; costMult: number | null; source: string }
 interface RefCelestial { name: string; a: string; b: string; c: string }
 interface RefChassis { category: string; outputFormula: string; mechanics: string; scaling: string; vulnerability: string }
+interface RefGovernorTier { key: string; name: string; area: string; commanderLevel: number; covers: string; notes: string }
+interface RefGovernorSpec { sheet: string; key: string; defines: string; behaviour: string; failure: string }
 
 // ============================================================================
 // Main
@@ -567,6 +569,38 @@ async function main(): Promise<void> {
       'Cultivation!Balance caps is explicit that realms primarily gate content rather than grant power.',
   );
 
+  const ALLIANCE_MAX_MEMBERS = C.fromSpec('ALLIANCE_MAX_MEMBERS', 60, 'spec/04 §7', 'Alliances hold up to 60 members.', [1, 1000]);
+  const NAP_NOTICE_MS = C.fromSpec(
+    'NAP_NOTICE_MS',
+    48 * 3_600_000,
+    'spec/04 §7 · "early exit requires 48h public notice"',
+    'A non-aggression pact takes this long to leave. Betrayal stays allowed; it is the surprise that is priced.',
+    [0, 30 * 86_400_000],
+  );
+  const REPUTATION_NAP_BREAK = C.assumed(
+    'REPUTATION_NAP_BREAK',
+    25,
+    'spec/04 §7 says breaches cost reputation without giving an amount',
+    'Reputation lost for breaking a non-aggression pact. Reputation never BLOCKS an action \u2014 it ' +
+      'prices one \u2014 and it feeds karma-weighted tribulations, so an oathbreaker pays in the ' +
+      'cultivation game as well as the diplomatic one.',
+  );
+  const REPUTATION_TREATY_BREAK = C.assumed(
+    'REPUTATION_TREATY_BREAK',
+    10,
+    'spec/04 §7 says breaches cost reputation without giving an amount',
+    'Reputation lost for breaking any other treaty. Lower than a NAP: a trade pact is a deal, a ' +
+      'non-aggression pact is a promise not to kill someone.',
+  );
+
+  const CONVOY_SPEED = C.assumed(
+    'CONVOY_SPEED',
+    12,
+    'spec/04 §2 lists convoy types by era (carts, wagons, rail, void haulers) without speeds',
+    'Map units per hour for a haul convoy. Slower than an army on purpose: resources moving are ' +
+      'resources exposed, and that exposure is what makes supply-line interdiction meaningful.',
+  );
+
   // -------------------------------------------------------------- governors
   const GOVERNOR_TIME_MULT = C.fromSpec('GOVERNOR_TIME_MULT', 2.0, 'spec/04 §6 · the 2x rule', 'Anything a governor initiates takes twice as long. That field is the whole mechanic.', [1, 10]);
   const PLAYER_TIME_MULT = C.fromSpec('PLAYER_TIME_MULT', 1.0, 'spec/04 §6', '', [0.1, 2]);
@@ -702,6 +736,34 @@ async function main(): Promise<void> {
       'second, narrower constraint layered on top rather than a replacement for it.',
   );
 
+  const POSTURE_FORTIFY_BONUS = C.assumed(
+    'POSTURE_FORTIFY_BONUS',
+    0.2,
+    'Governor_Specs describes Turtle/Hold/Sally without giving their modifiers',
+    'Defensive bonus for Turtle. Large enough that the published failure mode \u2014 "defaults to ' +
+      'Turtle, which loses winnable fights and wins unwinnable ones slowly" \u2014 is literally true.',
+  );
+  const POSTURE_SALLY_PENALTY = C.assumed(
+    'POSTURE_SALLY_PENALTY',
+    0.15,
+    'Governor_Specs describes Sally without giving its modifier',
+    'Defence given up by meeting an attacker in the field instead of holding the walls.',
+  );
+  const HAUL_FLOOR_PER_DAY = C.assumed(
+    'HAUL_FLOOR_PER_DAY',
+    5_000,
+    'Governor_Specs states stockpile floors in days without defining a day of consumption',
+    'Resources one day of a stockpile floor reserves. Until settlement consumption is modelled, ' +
+      'a floor in days is read against this.',
+  );
+  const HAUL_MIN_CARGO = C.assumed(
+    'HAUL_MIN_CARGO',
+    2_000,
+    'no published minimum convoy size',
+    'Smallest surplus worth dispatching a convoy for. Without it a resource policy produces a ' +
+      'trickle of interceptable haulers rather than a supply line.',
+  );
+
   // --------------------------------------------------------------- movement
   const ZOC_SPEED_MULT = C.fromSpec('ZOC_SPEED_MULT', 0.6, 'spec/03 §4 · zone of control', '0.6x speed inside a hostile fortification radius.', [0, 1]);
   const ATTRITION_PCT = C.fromSpec('ATTRITION_PCT', 0.03, 'spec/03 §4 · supply', '3% of strength per tick beyond supply range, escalating.', [0, 1]);
@@ -718,6 +780,8 @@ async function main(): Promise<void> {
   const research = readResearch(wb.sheet('Research_Disciplines'));
   const celestial = readCelestial(wb.sheet('Celestial_Sites'));
   const chassis = readChassis(wb.sheet('Category_Chassis'));
+  const governorTiers = readGovernorTiers(wb.sheet('Governors'));
+  const governorSpecs = readGovernorSpecs(wb.sheet('Governor_Specs'));
 
   // --------------------------------------------------------------- emission
   await mkdir(dirname(OUT_CONSTANTS), { recursive: true });
@@ -725,7 +789,10 @@ async function main(): Promise<void> {
   await writeFile(OUT_CONSTANTS, renderConstants(C, hash), 'utf8');
   await writeFile(
     OUT_REFDATA,
-    renderRefData(hash, { buildings, archetypes, unitGrades, unitPaths, counter, vetTiers, grades, holdings, research, equipment, celestial, chassis, shardDenoms }),
+    renderRefData(hash, {
+      buildings, archetypes, unitGrades, unitPaths, counter, vetTiers, grades, holdings,
+      research, equipment, celestial, chassis, shardDenoms, governorTiers, governorSpecs,
+    }),
     'utf8',
   );
   await writeFile(OUT_SEED, renderSeedSql(hash, { buildings, holdings, research, vetTiers, grades }), 'utf8');
@@ -1156,6 +1223,90 @@ function readChassis(s: Sheet): RefChassis[] {
   }));
 }
 
+/**
+ * Governor tiers, with the commander level each one demands.
+ *
+ * The Governors sheet writes these as "5+", "15+" — prose, but the only place
+ * the requirement exists. Parsing it keeps the gate tied to the workbook.
+ */
+function readGovernorTiers(s: Sheet): RefGovernorTier[] {
+  const h = findHeaderRow(s, 'Governor tier');
+  const idx = {
+    t: s.headerIndex(h, 'Governor tier'),
+    a: s.headerIndex(h, 'Area of authority'),
+    c: s.headerIndex(h, 'Commander level'),
+    cov: s.headerIndex(h, 'Holdings covered'),
+    n: s.headerIndex(h, 'Notes'),
+  };
+  const out: RefGovernorTier[] = [];
+  for (const r of s.dataRows(h)) {
+    const name = String(r[idx.t] ?? '').trim();
+    if (!name || !r[idx.a]) break;
+    const level = /(\d+)/.exec(String(r[idx.c] ?? ''));
+    if (!level) throw new ImportError(`Governors: cannot read a commander level from ${JSON.stringify(String(r[idx.c]))} for ${name}`);
+    out.push({
+      // 'Planetary Governor' -> 'planetary', matching the schema's tier enum.
+      key: slug(name).replace(/_governor$/, ''),
+      name,
+      area: String(r[idx.a] ?? ''),
+      commanderLevel: Number(level[1]),
+      covers: String(r[idx.cov] ?? ''),
+      notes: String(r[idx.n] ?? ''),
+    });
+  }
+  if (out.length !== 4) throw new ImportError(`expected 4 governor tiers, got ${out.length}`);
+  // The tiers must be a genuine ladder, or "appoint a better governor" means
+  // nothing.
+  for (let i = 1; i < out.length; i++) {
+    if (out[i]!.commanderLevel <= out[i - 1]!.commanderLevel) {
+      throw new ImportError(`Governors: tier ${out[i]!.name} does not demand more than ${out[i - 1]!.name}`);
+    }
+  }
+  return out;
+}
+
+/**
+ * The six spec sheets, with what each one does when left vague.
+ *
+ * Those failure modes are GAMEPLAY, not bugs — "stalls on the first
+ * unaffordable entry and builds nothing further" is the governor system
+ * working. Carrying them through to the UI is how a player learns to write a
+ * better spec instead of concluding the game is broken.
+ */
+function readGovernorSpecs(s: Sheet): RefGovernorSpec[] {
+  const h = findHeaderRow(s, 'Spec sheet');
+  const idx = {
+    s: s.headerIndex(h, 'Spec sheet'),
+    d: s.headerIndex(h, 'What the player defines'),
+    b: s.headerIndex(h, 'Governor behaviour'),
+    f: s.headerIndex(h, 'Failure if left vague'),
+  };
+  const out: RefGovernorSpec[] = [];
+  for (const r of s.dataRows(h)) {
+    const sheet = String(r[idx.s] ?? '').trim();
+    const defines = String(r[idx.d] ?? '').trim();
+    const behaviour = String(r[idx.b] ?? '').trim();
+    const failure = String(r[idx.f] ?? '').trim();
+    if (!sheet || !defines || !behaviour || !failure) continue;
+    // The sheet ends with a merged note spanning all four columns, and ExcelJS
+    // reports a merged value in every cell it covers — so a row whose columns
+    // are all the same string is prose, not a spec.
+    if (defines === sheet && behaviour === sheet) continue;
+    out.push({ sheet, key: camel(sheet), defines, behaviour, failure });
+  }
+  if (out.length !== 6) {
+    throw new ImportError(
+      `expected 6 governor spec sheets, got ${out.length}: ${out.map((x) => x.sheet).join(', ')}`,
+    );
+  }
+  return out;
+}
+
+function camel(s: string): string {
+  const parts = s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return parts.map((p, i) => (i === 0 ? p : p[0]!.toUpperCase() + p.slice(1))).join('');
+}
+
 function readShardDenominations(s: Sheet): { name: string; hours: number; source: string }[] {
   const h = findHeaderRow(s, 'Shard');
   const idx = { n: s.headerIndex(h, 'Shard'), hrs: s.headerIndex(h, 'Hours granted'), src: s.headerIndex(h, 'Typical source') };
@@ -1574,6 +1725,8 @@ interface RefTrial {
   lines.push(`export interface RefCelestial { name: string; a: string; b: string; c: string }`);
   lines.push(`export interface RefChassis { category: string; outputFormula: string; mechanics: string; scaling: string; vulnerability: string }`);
   lines.push(`export interface RefShardDenom { name: string; hours: number; source: string }`);
+  lines.push(`export interface RefGovernorTier { key: string; name: string; area: string; commanderLevel: number; covers: string; notes: string }`);
+  lines.push(`export interface RefGovernorSpec { sheet: string; key: string; defines: string; behaviour: string; failure: string }`);
   lines.push('');
   lines.push('/** role name -> index into COUNTER_MATRIX rows/columns. */');
   lines.push(`export const COUNTER_ROLES: Readonly<Record<string, number>> = ${json((d['counter'] as { roles: unknown }).roles)};`);
@@ -1593,6 +1746,8 @@ interface RefTrial {
     ['CELESTIAL_SITES', 'RefCelestial'],
     ['CATEGORY_CHASSIS', 'RefChassis'],
     ['SHARD_DENOMINATIONS', 'RefShardDenom'],
+    ['GOVERNOR_TIERS', 'RefGovernorTier'],
+    ['GOVERNOR_SPECS', 'RefGovernorSpec'],
   ] as const) {
     const keyMap: Record<string, string> = {
       BUILDINGS: 'buildings',
@@ -1607,6 +1762,8 @@ interface RefTrial {
       CELESTIAL_SITES: 'celestial',
       CATEGORY_CHASSIS: 'chassis',
       SHARD_DENOMINATIONS: 'shardDenoms',
+      GOVERNOR_TIERS: 'governorTiers',
+      GOVERNOR_SPECS: 'governorSpecs',
     };
     lines.push(`export const ${name}: readonly ${type}[] = ${json(d[keyMap[name]!])};`);
     lines.push('');

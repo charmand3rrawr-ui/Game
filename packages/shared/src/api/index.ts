@@ -127,6 +127,38 @@ export const appointGovernorSchema = commandBase.extend({
 });
 export type AppointGovernorCommand = z.infer<typeof appointGovernorSchema>;
 
+/**
+ * Note what is NOT in that schema: the commander's LEVEL.
+ *
+ * The governor tiers gate on it (a Bailiff needs 5, a Sector Governor 40), so a
+ * client that could state it could appoint a Sector Governor on its first day.
+ * The server derives it instead — invariant §2.1, the same reason the client
+ * never computes a cost.
+ */
+export const governorSpecsSchema = appointGovernorSchema.shape.specs;
+export type GovernorSpecsInput = z.infer<typeof governorSpecsSchema>;
+
+export const updateGovernorSpecsSchema = commandBase.extend({
+  specs: governorSpecsSchema,
+});
+
+export const dismissGovernorSchema = commandBase;
+export const auditGovernorSchema = commandBase;
+
+export const createAllianceSchema = commandBase.extend({
+  name: z.string().min(3).max(48),
+  /** Short tag, shown on the map beside every member's holdings. */
+  tag: z.string().min(2).max(6),
+});
+
+export const joinAllianceSchema = commandBase.extend({
+  allianceId: uuid,
+  role: z.enum(['leader', 'diplomat', 'ops', 'quartermaster', 'banker', 'member']).optional(),
+});
+
+export const acceptTreatySchema = commandBase;
+export const breakTreatySchema = commandBase;
+
 export const proposeTreatySchema = commandBase.extend({
   kind: z.enum(['nap', 'trade', 'defensive', 'tribute', 'border', 'war', 'armistice']),
   counterpartyId: uuid,

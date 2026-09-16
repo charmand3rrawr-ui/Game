@@ -133,6 +133,76 @@ export interface CultivationDto {
   visibleNearby: TribulationDto[];
 }
 
+// ---------------------------------------------------------------- governors
+
+/**
+ * Note there is no `commanderLevel` on the appointment call.
+ *
+ * The tiers gate on it, so the server derives it; the client only learns what
+ * its own level IS, in order to grey out the tiers it cannot reach and say why.
+ */
+export interface GovernorSpecsDto {
+  buildOrder: { buildingKey: string; toLevel: number }[];
+  trainingStandingOrder: { unitKey: string; maintainCount: number }[];
+  researchMandate: string[];
+  resourcePolicy: { keepDays: number; haulSurplusTo?: string };
+  defencePosture: 'garrison' | 'mobile' | 'fortify';
+  escalationRules: { alertOnIncoming: boolean; alertBelowLoyalty: number };
+}
+
+export interface GovernorDto {
+  id: string;
+  playerId: string;
+  commanderId: string;
+  tier: 'bailiff' | 'planetary' | 'system' | 'sector';
+  areaRef: { layer: string; settlementIds: string[] };
+  areaNames: string[];
+  specs: GovernorSpecsDto;
+  appointedAt: string;
+}
+
+export interface GovernorsDto {
+  commanderLevel: number;
+  tiers: { key: string; name: string; area: string; commanderLevel: number; covers: string; notes: string }[];
+  sheets: { sheet: string; key: string; defines: string; behaviour: string; failure: string }[];
+  settlements: { id: string; name: string; governorId?: string }[];
+  governors: GovernorDto[];
+}
+
+export interface AuditDto {
+  subverted: boolean;
+  by?: string;
+  /** Plain sentences naming each way the running specs differ from yours. */
+  findings: string[];
+}
+
+// ---------------------------------------------------------------- diplomacy
+
+export interface TreatyDto {
+  id: string;
+  kind: 'nap' | 'trade' | 'defensive' | 'tribute' | 'border' | 'war' | 'armistice';
+  partyA: string;
+  partyB: string;
+  terms: Record<string, unknown>;
+  proposedAt: string;
+  signedAt: string;
+  expiresAt?: string;
+  brokenAt?: string;
+}
+
+export interface AllianceDto {
+  alliance: { id: string; name: string; tag: string; treasury: Record<string, string>; foundedAt: string } | null;
+  members: { allianceId: string; playerId: string; role: string; permissions: string[]; joinedAt: string }[];
+  maxMembers: number;
+  treaties: TreatyDto[];
+  known: { id: string; name: string; reputation: number; allianceId?: string; holdings: number }[];
+  me: string;
+  serverTime: number;
+  napNoticeMs: string;
+  napBreakReputation: number;
+  treatyBreakReputation: number;
+}
+
 export interface MovementDto {
   id: string; ownerId: string; originId: string; targetId: string; mission: string;
   departsAt: string; arrivesAt: string; formations: { formationId: string; count: number }[];
@@ -183,6 +253,16 @@ export interface Api {
   spendShards(itemId: string, shardHours: number): Promise<QueueItemDto>;
   dispatch(args: { originId: string; targetId: string; mission: string; formations: { formationId: string; count: number }[] }): Promise<MovementDto>;
   tierUp(formationId: string, track: 'atk' | 'def'): Promise<FormationDto>;
+  governors(): Promise<GovernorsDto>;
+  appointGovernor(args: { commanderId: string; tier: string; settlementIds: string[]; layer: string; specs: GovernorSpecsDto }): Promise<GovernorDto>;
+  updateGovernorSpecs(governorId: string, specs: GovernorSpecsDto): Promise<GovernorDto>;
+  dismissGovernor(governorId: string): Promise<{ dismissed: true }>;
+  auditGovernor(governorId: string): Promise<AuditDto>;
+  alliance(): Promise<AllianceDto>;
+  createAlliance(name: string, tag: string): Promise<AllianceDto['alliance']>;
+  proposeTreaty(args: { counterpartyId: string; kind: string; terms: Record<string, unknown> }): Promise<TreatyDto>;
+  acceptTreaty(treatyId: string): Promise<TreatyDto>;
+  breakTreaty(treatyId: string): Promise<{ treaty: TreatyDto; reputationLost: number; effectiveAt: string }>;
   /** Advance the local world. No-op against a real server, which has a clock. */
   tick?(): void;
 }
@@ -226,6 +306,33 @@ const remoteApi: Api = {
   dispatch: (args) => call('/movements', { method: 'POST', body: JSON.stringify({ commandId: newCommandId(), ...args }) }),
   tierUp: (formationId, track) =>
     call(`/formations/${formationId}/tier-up`, { method: 'POST', body: JSON.stringify({ commandId: newCommandId(), track }) }),
+  governors: () => call('/governors'),
+  appointGovernor: (args) =>
+    call('/governors', {
+      method: 'POST',
+      body: JSON.stringify({
+        commandId: newCommandId(),
+        commanderId: args.commanderId,
+        tier: args.tier,
+        areaRef: { layer: args.layer, settlementIds: args.settlementIds },
+        specs: args.specs,
+      }),
+    }),
+  updateGovernorSpecs: (governorId, specs) =>
+    call(`/governors/${governorId}/specs`, { method: 'PATCH', body: JSON.stringify({ commandId: newCommandId(), specs }) }),
+  dismissGovernor: (governorId) =>
+    call(`/governors/${governorId}`, { method: 'DELETE', body: JSON.stringify({ commandId: newCommandId() }) }),
+  auditGovernor: (governorId) =>
+    call(`/governors/${governorId}/audit`, { method: 'POST', body: JSON.stringify({ commandId: newCommandId() }) }),
+  alliance: () => call('/alliance'),
+  createAlliance: (name, tag) =>
+    call('/alliance', { method: 'POST', body: JSON.stringify({ commandId: newCommandId(), name, tag }) }),
+  proposeTreaty: (args) =>
+    call('/treaties', { method: 'POST', body: JSON.stringify({ commandId: newCommandId(), ...args }) }),
+  acceptTreaty: (treatyId) =>
+    call(`/treaties/${treatyId}/accept`, { method: 'POST', body: JSON.stringify({ commandId: newCommandId() }) }),
+  breakTreaty: (treatyId) =>
+    call(`/treaties/${treatyId}/break`, { method: 'POST', body: JSON.stringify({ commandId: newCommandId() }) }),
 };
 
 export const api: Api = isLocalMode() ? localApi : remoteApi;

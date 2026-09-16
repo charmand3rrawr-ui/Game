@@ -22,6 +22,7 @@ import {
   ROSTER,
   UNIT_GRADES,
   tryUnitDef,
+  countWhere,
   trainTimeMs,
   gradeForLevel,
   type Building,
@@ -73,7 +74,7 @@ function militaryBuildings(view: SettlementView): Set<string> {
 }
 
 export function trainingSlots(view: SettlementView): number {
-  const count = view.buildings.filter((b) => buildingRef(b.buildingKey).category === 'Military').length;
+  const count = countWhere(view.buildings, (b) => buildingRef(b.buildingKey).category === 'Military');
   return count === 0 ? 0 : C.MILITARY_QUEUE_SLOTS;
 }
 
@@ -230,11 +231,29 @@ export function validateTrainingEnqueue(ctx: TrainingContext, unitKey: string, q
 }
 
 /** Everything this settlement could train right now, with its reason if not. */
+/**
+ * The roster up to an era, cached.
+ *
+ * Six eras, one fixed answer each, and this sits in front of the 2,268-unit
+ * roster on every settlement screen open — so the filter ran in full each time
+ * to produce a list that had not changed since the process started. Frozen, so
+ * the shared copy cannot be mutated by a caller.
+ */
+const ROSTER_BY_ERA = new Map<number, readonly UnitDef[]>();
+
+function unitsUpToEra(era: number): readonly UnitDef[] {
+  const hit = ROSTER_BY_ERA.get(era);
+  if (hit) return hit;
+  const list = Object.freeze(ROSTER.filter((u) => u.era <= era));
+  ROSTER_BY_ERA.set(era, list);
+  return list;
+}
+
 export function trainableHere(ctx: TrainingContext): {
   unit: UnitDef; allowed: boolean; reason?: string; cost: TrainingCost;
 }[] {
   const speed = facilitySpeedFor(ctx.view);
-  return ROSTER.filter((u) => u.era <= ctx.playerEra).map((unit) => {
+  return unitsUpToEra(ctx.playerEra).map((unit) => {
     const check = validateTrainingEnqueue(ctx, unit.unitKey, 1);
     return {
       unit,

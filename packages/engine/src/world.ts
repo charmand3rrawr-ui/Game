@@ -19,6 +19,7 @@ import {
   GRADES,
   HOLDINGS,
   adminUpkeep,
+  countWhere,
   applyShards,
   battleSeed,
   distance,
@@ -43,7 +44,15 @@ import {
   type ScheduledEvent,
   type Settlement,
   type SlotKind,
+  type Alliance,
+  type AllianceMember,
+  type AllianceRole,
+  type Governor,
+  type GovernorSpecs,
+  type GovernorTier,
   type Stockpile,
+  type Treaty,
+  type TreatyKind,
   type Tribulation,
   type Uuid,
   qiBreakthroughCost,
@@ -83,6 +92,10 @@ import {
   accrueQi, cultivationAura, gradeRef, qiPerHour, realmName, resolveTribulation,
   tribulationOdds, validateBreakthrough, type QiSources, type TribulationOdds,
 } from './sim/cultivation.js';
+import {
+  auditGovernor, checkEscalation, corruptSpecs, governorTier, nextIntent, postureEffect,
+  validateAppointment, type Audit, type Intent,
+} from './sim/governor.js';
 
 export class CommandError extends Error {
   constructor(
@@ -119,6 +132,15 @@ export interface Options {
   research: { key: string; name: string; era: number; branch: string; level: number; grade: number; allowed: boolean; reason?: string; cost: Record<string, bigint>; timeMs: Millis }[];
 }
 
+/** A player you could plausibly treat with: someone whose holdings you can see. */
+export interface KnownPlayer {
+  id: Uuid;
+  name: string;
+  reputation: number;
+  allianceId?: Uuid;
+  holdings: number;
+}
+
 export interface DispatchArgs {
   commandId: Uuid;
   playerId: Uuid;
@@ -143,6 +165,13 @@ export class World {
     this.ids = new IdFactory(opts.worldId);
     this.clock = opts.now;
     this.scheduler = new Scheduler(this.store, this.ids);
+    // Keep the world's clock in step with the drain. A handler that issues a
+    // command — a governor starting its next build the moment the last one
+    // lands — goes through the same enqueue path a player uses, and that path
+    // reads `this.clock`. Left at the pre-drain instant it would set the new
+    // job's finishesAt in the past, and the job would complete for free inside
+    // the same drain.
+    this.scheduler.onInstant = (t) => { if (t > this.clock) this.clock = t; };
     this.registerHandlers();
   }
 
@@ -197,6 +226,42 @@ export class World {
   }
 
   /**
+   * Every view a player owns, built in one pass over each table.
+   *
+   * Calling `viewIn` per settlement re-walks the buildings, queue and stockpile
+   * tables once for EACH holding — so reading a ten-holding empire scanned every
+   * building in the world ten times over. Since there is no cap on holdings and
+   * the empire is meant to grow without limit (spec/04 §6), that cost grows as
+   * the square of exactly the thing the game encourages.
+   *
+   * Here each table is walked once and its rows dropped into the bucket for
+   * their settlement, so the work is proportional to the tables plus the
+   * holdings rather than their product. The per-settlement `viewIn` is still
+   * the right call for a single holding; this is for the whole-empire reads
+   * (Qi income, admin upkeep) that run on every header render.
+   */
+  private viewsOfOwner(tx: Tx, playerId: Uuid): SettlementView[] {
+    const views = new Map<Uuid, SettlementView>();
+    for (const s of tx.settlements.all()) {
+      if (s.ownerId === playerId) views.set(s.id, { settlement: s, buildings: [], queue: [], stockpiles: [] });
+    }
+    if (views.size === 0) return [];
+
+    for (const b of tx.buildings.all()) views.get(b.settlementId)?.buildings.push(b);
+    for (const q of tx.queue.all()) views.get(q.settlementId)?.queue.push(q);
+    for (const sp of tx.stockpiles.all()) views.get(sp.settlementId)?.stockpiles.push(sp);
+
+    // Queue order is load-bearing — slots are consumed in position order — so
+    // it is restored per holding, on lists that are only a few items long.
+    const out: SettlementView[] = [];
+    for (const v of views.values()) {
+      v.queue.sort((a, b) => a.position - b.position);
+      out.push(v);
+    }
+    return out;
+  }
+
+  /**
    * A player, with lazily-accrued values brought up to date.
    *
    * Qi is banked on the row but accrues continuously, so reading the raw row
@@ -206,7 +271,7 @@ export class World {
   player(id: Uuid): Player {
     return this.store.read((tx) => {
       const p = tx.players.require(id);
-      const income = qiPerHour(tx.settlements.where((s) => s.ownerId === id).map((s) => this.viewIn(tx, s.id)));
+      const income = qiPerHour(this.viewsOfOwner(tx, id));
       return {
         ...p,
         qi: accrueQi(p.qi, income.perHour, p.temporalDebt, p.lastQiAccruedAt ?? p.createdAt, this.clock),
@@ -262,15 +327,26 @@ export class World {
     return this.store.read((tx) => {
       const items: AttentionItem[] = [];
       const player = tx.players.require(playerId);
-      const settlements = tx.settlements.where((s) => s.ownerId === playerId);
+      // Every holding's view in one pass. This screen reads the whole empire on
+      // every open, and a per-holding viewIn re-walked all three tables per
+      // holding — the cost of checking on a wide empire grew with its square.
+      const views = this.viewsOfOwner(tx, playerId);
 
-      for (const s of settlements) {
-        const view = this.viewIn(tx, s.id);
+      for (const view of views) {
+        const s = view.settlement;
         const hq = gradeForLevel(hqLevel(view));
 
         // Idle build queues, by settlement. An empty personal slot is unspent
         // time, and in a game measured in months that compounds.
-        const personalUsed = view.queue.filter((q) => q.slotKind === 'personal').length;
+        //
+        // Both slot kinds are counted in ONE walk of the queue. Two `filter`
+        // calls built two throwaway arrays only to read their lengths.
+        let personalUsed = 0;
+        let governorUsed = 0;
+        for (const q of view.queue) {
+          if (q.slotKind === 'personal') personalUsed++;
+          else if (q.slotKind === 'governor') governorUsed++;
+        }
         const personalSlots = personalQueueSlots(hq);
         if (personalUsed < personalSlots) {
           items.push({
@@ -336,7 +412,7 @@ export class World {
         // that hits a resource shortfall stalls rather than skipping ahead, and
         // that stall MUST surface here (spec/04 §6).
         const gov = s.governorId ? tx.governors.get(s.governorId) : undefined;
-        if (gov && view.queue.filter((q) => q.slotKind === 'governor').length === 0 && gov.specs.buildOrder.length > 0) {
+        if (gov && governorUsed === 0 && gov.specs.buildOrder.length > 0) {
           items.push({
             id: `gov:${s.id}`,
             kind: 'governor_stalled',
@@ -352,7 +428,7 @@ export class World {
 
       // Incoming hostile movements, with countdown and estimated composition.
       // The most urgent thing on the board, always.
-      const owned = new Set(settlements.map((s) => s.id));
+      const owned = new Set(views.map((v) => v.settlement.id));
       for (const m of tx.movements.all()) {
         if (!owned.has(m.targetId)) continue;
         if (m.ownerId === playerId) continue;
@@ -619,7 +695,7 @@ export class World {
       }
 
       const slotKind = args.slotKind;
-      const used = view.queue.filter((q) => q.slotKind === slotKind && q.kind !== 'training').length;
+      const used = countWhere(view.queue, (q) => q.slotKind === slotKind && q.kind !== 'training');
       const available = slotKind === 'personal'
         ? personalQueueSlots(gradeForLevel(hqLevel(view)))
         : C.GOVERNOR_QUEUE_SLOTS;
@@ -753,7 +829,7 @@ export class World {
       const view = this.viewIn(tx, item.settlementId);
       if (view.settlement.ownerId !== playerId) throw new CommandError('not-owner', 'you do not own this settlement');
 
-      const personalUsed = view.queue.filter((q) => q.slotKind === 'personal').length;
+      const personalUsed = countWhere(view.queue, (q) => q.slotKind === 'personal');
       const personalSlots = personalQueueSlots(gradeForLevel(hqLevel(view)));
       if (personalUsed >= personalSlots) {
         throw new CommandError(
@@ -924,7 +1000,13 @@ export class World {
       if (args.mission === 'attack' || args.mission === 'conquer' || args.mission === 'raid') {
         const nap = tx.treaties.find(
           (t) =>
-            t.kind === 'nap' && !t.brokenAt &&
+            t.kind === 'nap' &&
+            // IN FORCE, not merely proposed. Blocking on an unsigned proposal
+            // would let anyone freeze an enemy's armies by spamming offers.
+            t.signedAt > 0n &&
+            // And not yet lapsed: breaking a NAP takes 48h of public notice,
+            // during which it still binds.
+            (t.brokenAt === undefined || t.brokenAt > this.clock) &&
             ((t.partyA === args.playerId && t.partyB === target.ownerId) || (t.partyB === args.playerId && t.partyA === target.ownerId)),
         );
         if (nap) {
@@ -1040,7 +1122,7 @@ export class World {
       const settlement = tx.settlements.require(settlementId);
       if (settlement.ownerId !== playerId) throw new CommandError('not-owner', 'you do not own this settlement');
 
-      const income = qiPerHour(tx.settlements.where((x) => x.ownerId === playerId).map((x) => this.viewIn(tx, x.id)));
+      const income = qiPerHour(this.viewsOfOwner(tx, playerId));
       const qi = accrueQi(player.qi, income.perHour, player.temporalDebt, player.lastQiAccruedAt ?? player.createdAt, this.clock);
 
       const check = validateBreakthrough({
@@ -1161,6 +1243,437 @@ export class World {
     });
   }
 
+  // ==========================================================================
+  // Governors — automation priced in time, never in efficiency
+  // ==========================================================================
+
+  /**
+   * Appoint a governor over an area.
+   *
+   * The area is a LAYER, not a list the player curates: a Bailiff governs a
+   * province and therefore every holding you have in it. That is what makes
+   * governors scale with an empire instead of needing re-appointment every time
+   * you found something.
+   */
+  appointGovernor(args: {
+    commandId: Uuid; playerId: Uuid; commanderId: Uuid; tier: GovernorTier;
+    settlementIds: Uuid[]; specs: GovernorSpecs; commanderLevel: number;
+  }): Governor {
+    return this.idempotent(args.commandId, (tx) => {
+      const settlements = args.settlementIds.map((id) => tx.settlements.require(id));
+      for (const s of settlements) {
+        if (s.ownerId !== args.playerId) throw new CommandError('not-owner', `${s.name} is not yours`);
+      }
+
+      const mandated = new Set<string>();
+      for (const g of tx.governors.where((g) => g.playerId === args.playerId)) {
+        for (const key of g.specs.researchMandate) mandated.add(key);
+      }
+
+      const check = validateAppointment({
+        tier: args.tier,
+        commanderLevel: args.commanderLevel,
+        settlements,
+        mandatedDisciplines: mandated,
+        specs: args.specs,
+      });
+      if (!check.ok) throw new CommandError(check.type, check.detail, check.meta);
+
+      const governor: Governor = {
+        id: this.ids.next('gv', this.clock),
+        playerId: args.playerId,
+        commanderId: args.commanderId,
+        tier: args.tier,
+        areaRef: { layer: settlements[0]!.layer, settlementIds: args.settlementIds },
+        specs: args.specs,
+        appointedAt: this.clock,
+      };
+      tx.governors.put(governor);
+      for (const s of settlements) tx.settlements.put({ ...s, governorId: governor.id });
+
+      tx.appendEvent({
+        id: this.ids.next('log', this.clock),
+        worldId: this.worldId,
+        shardId: settlements[0]!.shardId,
+        occurredAt: this.clock,
+        kind: 'governor.appointed',
+        actorId: args.playerId,
+        subjectId: governor.id,
+        payload: { tier: args.tier, holdings: args.settlementIds.length, commanderId: args.commanderId },
+      });
+
+      // Start immediately rather than waiting for the next completion, or a
+      // fresh appointment looks broken for as long as the first job would take.
+      for (const s of settlements) this.runGovernorSpec(tx, s.id, this.clock);
+
+      return governor;
+    });
+  }
+
+  /**
+   * Rewrite a governor's specs. Takes effect on the NEXT initiation.
+   *
+   * Never retroactively: a job already running was initiated under the old spec
+   * and finishes under it. Rewriting history mid-build would break the one
+   * promise the queue makes — that `finishesAt` is computed once (§2.8).
+   */
+  updateGovernorSpecs(commandId: Uuid, playerId: Uuid, governorId: Uuid, specs: GovernorSpecs): Governor {
+    return this.idempotent(commandId, (tx) => {
+      const g = tx.governors.require(governorId);
+      if (g.playerId !== playerId) throw new CommandError('not-owner', 'that governor is not yours');
+
+      const mandated = new Set<string>();
+      for (const other of tx.governors.where((x) => x.playerId === playerId && x.id !== governorId)) {
+        for (const key of other.specs.researchMandate) mandated.add(key);
+      }
+      const check = validateAppointment({
+        tier: g.tier,
+        commanderLevel: governorTier(g.tier).commanderLevel,
+        settlements: g.areaRef.settlementIds.map((id) => tx.settlements.require(id)),
+        mandatedDisciplines: mandated,
+        specs,
+      });
+      if (!check.ok) throw new CommandError(check.type, check.detail, check.meta);
+
+      const updated: Governor = { ...g, specs };
+      tx.governors.put(updated);
+      return updated;
+    });
+  }
+
+  dismissGovernor(commandId: Uuid, playerId: Uuid, governorId: Uuid): { dismissed: true } {
+    return this.idempotent(commandId, (tx) => {
+      const g = tx.governors.require(governorId);
+      if (g.playerId !== playerId) throw new CommandError('not-owner', 'that governor is not yours');
+      for (const id of g.areaRef.settlementIds) {
+        const s = tx.settlements.get(id);
+        if (s?.governorId === governorId) tx.settlements.put({ ...s, governorId: undefined });
+      }
+      tx.governors.delete(governorId);
+      return { dismissed: true as const };
+    });
+  }
+
+  /**
+   * Audit a governor.
+   *
+   * The ONLY way to discover a subverted one. A turned governor follows
+   * corrupted specs silently (spec/04 §9), so nothing on a normal read gives it
+   * away — which is precisely why this command has to exist and why a
+   * suspicious player has to spend an action on it.
+   */
+  audit(commandId: Uuid, playerId: Uuid, governorId: Uuid): Audit {
+    return this.idempotent(commandId, (tx) => {
+      const g = tx.governors.require(governorId);
+      if (g.playerId !== playerId) throw new CommandError('not-owner', 'that governor is not yours');
+      const result = auditGovernor(g, (g as Governor & { writtenSpecs?: GovernorSpecs }).writtenSpecs ?? g.specs);
+
+      tx.appendEvent({
+        id: this.ids.next('log', this.clock),
+        worldId: this.worldId,
+        shardId: tx.settlements.require(g.areaRef.settlementIds[0]!).shardId,
+        occurredAt: this.clock,
+        kind: 'governor.audited',
+        actorId: playerId,
+        subjectId: governorId,
+        payload: { subverted: result.subverted, findings: result.findings },
+      });
+      return result;
+    });
+  }
+
+  /**
+   * Turn someone else's governor rather than killing them.
+   *
+   * The corrupted specs are applied and the ORIGINAL is kept so an audit has
+   * something to compare against. The victim is told nothing.
+   */
+  subvertGovernor(commandId: Uuid, spymasterId: Uuid, governorId: Uuid): { subverted: true } {
+    return this.idempotent(commandId, (tx) => {
+      const g = tx.governors.require(governorId);
+      if (g.playerId === spymasterId) throw new CommandError('validation', 'that governor is already yours');
+      if (g.subvertedBy) throw new CommandError('validation', 'that governor has already been turned');
+
+      tx.governors.put({
+        ...g,
+        subvertedBy: spymasterId,
+        specs: corruptSpecs(g.specs),
+        // Kept so an audit can show the player what they actually wrote.
+        writtenSpecs: g.specs,
+      } as Governor & { writtenSpecs: GovernorSpecs });
+
+      // Logged, because the World Atlas remembers everything — but NOT emitted
+      // to the victim. A subversion they are told about is a status effect.
+      tx.appendEvent({
+        id: this.ids.next('log', this.clock),
+        worldId: this.worldId,
+        shardId: tx.settlements.require(g.areaRef.settlementIds[0]!).shardId,
+        occurredAt: this.clock,
+        kind: 'governor.subverted',
+        actorId: spymasterId,
+        subjectId: governorId,
+        payload: { victim: g.playerId },
+      });
+      return { subverted: true as const };
+    });
+  }
+
+  /** Assassinate a governor: the whole area stops initiating anything. */
+  assassinateGovernor(commandId: Uuid, killerId: Uuid, governorId: Uuid): { killed: true } {
+    return this.idempotent(commandId, (tx) => {
+      const g = tx.governors.require(governorId);
+      if (g.playerId === killerId) throw new CommandError('validation', 'that governor is yours');
+      // Running jobs continue; nothing new starts. The area is not destroyed,
+      // it is paralysed — which is worse, and quieter.
+      tx.governors.put({ ...g, commanderId: '' });
+      this.emit('governor.stalled', `player:${g.playerId}`, {
+        governorId, settlementId: g.areaRef.settlementIds[0], reason: 'the governor is dead',
+      });
+      return { killed: true as const };
+    });
+  }
+
+  governorsOf(playerId: Uuid): Governor[] {
+    return this.store.read((tx) => tx.governors.where((g) => g.playerId === playerId));
+  }
+
+  /**
+   * The level of the best officer this player can put over a province.
+   *
+   * ASSUMED — see DECISIONS.md D6. The workbook gates each
+   * governor tier on a commander level — Bailiff 5, Planetary 15, System 25,
+   * Sector 40 — but ships no Commanders sheet saying where a commander's level
+   * comes from, and nothing in the spec set defines one.
+   *
+   * Those four numbers place themselves, though. 5 through 40 is nowhere on the
+   * 1–42 cultivation ladder (a Bailiff would need most of Era II, a Sector
+   * Governor would be endgame) and sits naturally near the bottom of the 0–1337
+   * level ladder that veterancy, formations and the Grades table all share. So
+   * a commander's level is read as a level on THAT ladder, and the best
+   * commander a player can field is the most experienced formation they have:
+   * someone who has actually led troops.
+   *
+   * The consequences are the ones the workbook's notes describe. A brand-new
+   * player has nobody — every formation is green at level 0 — so delegation is
+   * something you earn by fighting, not something you start with. Level 5 comes
+   * quickly once a formation has seen action; level 40 wants a genuinely
+   * veteran officer. When a Commanders sheet arrives this is the one function
+   * to replace.
+   *
+   * It exists so the API never takes the level from the client. A client that
+   * could state it could appoint a Sector Governor on day one.
+   */
+  commanderLevelOf(playerId: Uuid): number {
+    return this.store.read((tx) => {
+      let best = 0;
+      for (const f of tx.formations.where((f) => f.ownerId === playerId)) {
+        // Either track qualifies. An officer who has only ever held a wall is
+        // still an officer.
+        best = Math.max(best, f.atkLevel, f.defLevel);
+      }
+      return best;
+    });
+  }
+
+  // ==========================================================================
+  // Alliances and treaties
+  // ==========================================================================
+
+  createAlliance(commandId: Uuid, playerId: Uuid, name: string, tag: string): Alliance {
+    return this.idempotent(commandId, (tx) => {
+      const player = tx.players.require(playerId);
+      if (player.allianceId) throw new CommandError('validation', 'you are already in an alliance');
+      if (tx.alliances.find((a) => a.tag.toLowerCase() === tag.toLowerCase())) {
+        throw new CommandError('validation', `the tag ${tag} is taken`);
+      }
+
+      const alliance: Alliance = {
+        id: this.ids.next('al', this.clock),
+        worldId: this.worldId,
+        name,
+        tag,
+        treasury: {},
+        foundedAt: this.clock,
+      };
+      tx.alliances.put(alliance);
+      tx.allianceMembers.put({
+        allianceId: alliance.id, playerId, role: 'leader',
+        permissions: ['all'], joinedAt: this.clock,
+      });
+      tx.players.put({ ...player, allianceId: alliance.id });
+      return alliance;
+    });
+  }
+
+  joinAlliance(commandId: Uuid, playerId: Uuid, allianceId: Uuid, role: AllianceRole = 'member'): AllianceMember {
+    return this.idempotent(commandId, (tx) => {
+      const player = tx.players.require(playerId);
+      if (player.allianceId) throw new CommandError('validation', 'you are already in an alliance');
+      tx.alliances.require(allianceId);
+
+      // Up to 60 members (spec/04 §7). An alliance that can absorb a server is
+      // not an alliance, it is the server.
+      const members = tx.allianceMembers.where((m) => m.allianceId === allianceId);
+      if (members.length >= C.ALLIANCE_MAX_MEMBERS) {
+        throw new CommandError('validation', `an alliance holds at most ${C.ALLIANCE_MAX_MEMBERS} members`, {
+          limit: C.ALLIANCE_MAX_MEMBERS,
+        });
+      }
+
+      const member: AllianceMember = { allianceId, playerId, role, permissions: [], joinedAt: this.clock };
+      tx.allianceMembers.put(member);
+      tx.players.put({ ...player, allianceId });
+      this.emit('treaty.proposed', `alliance:${allianceId}`, {
+        treatyId: '', from: playerId, kind: 'joined', terms: { role },
+      });
+      return member;
+    });
+  }
+
+  /**
+   * Propose a treaty. It binds only once the counterparty accepts.
+   *
+   * Treaties carry mechanical teeth, not just text (spec/04 §7): a NAP
+   * hard-blocks attacks on the server, which `dispatch` already enforces.
+   */
+  proposeTreaty(args: {
+    commandId: Uuid; playerId: Uuid; counterpartyId: Uuid; kind: TreatyKind;
+    terms: Record<string, unknown>; expiresAt?: Millis;
+  }): Treaty {
+    return this.idempotent(args.commandId, (tx) => {
+      tx.players.require(args.counterpartyId);
+      if (args.counterpartyId === args.playerId) throw new CommandError('validation', 'you cannot treat with yourself');
+
+      const treaty: Treaty = {
+        id: this.ids.next('tr', this.clock),
+        kind: args.kind,
+        partyA: args.playerId,
+        partyB: args.counterpartyId,
+        // Unsigned until accepted: `signedAt` is what `dispatch` checks.
+        terms: { ...args.terms, accepted: false },
+        signedAt: 0n,
+        expiresAt: args.expiresAt,
+      };
+      tx.treaties.put(treaty);
+
+      this.emit('treaty.proposed', `player:${args.counterpartyId}`, {
+        treatyId: treaty.id, from: args.playerId, kind: args.kind, terms: args.terms,
+      });
+      return treaty;
+    });
+  }
+
+  acceptTreaty(commandId: Uuid, playerId: Uuid, treatyId: Uuid): Treaty {
+    return this.idempotent(commandId, (tx) => {
+      const t = tx.treaties.require(treatyId);
+      if (t.partyB !== playerId) throw new CommandError('not-owner', 'that proposal was not made to you');
+      if (t.signedAt > 0n) throw new CommandError('already-complete', 'that treaty is already in force');
+
+      const signed: Treaty = { ...t, signedAt: this.clock, terms: { ...t.terms, accepted: true } };
+      tx.treaties.put(signed);
+
+      tx.appendEvent({
+        id: this.ids.next('log', this.clock),
+        worldId: this.worldId,
+        shardId: 'world',
+        occurredAt: this.clock,
+        kind: 'treaty.signed',
+        actorId: playerId,
+        subjectId: t.partyA,
+        payload: { treatyId, kind: t.kind },
+      });
+      return signed;
+    });
+  }
+
+  /**
+   * Break a treaty.
+   *
+   * ALWAYS ALLOWED, ALWAYS PRICED (spec/04 §7). Reputation never blocks an
+   * action — betrayal is a move, not an exploit — but a NAP requires 48 hours
+   * of public notice, and breaking one early costs reputation on top.
+   */
+  breakTreaty(commandId: Uuid, playerId: Uuid, treatyId: Uuid): { treaty: Treaty; reputationLost: number; effectiveAt: Millis } {
+    return this.idempotent(commandId, (tx) => {
+      const t = tx.treaties.require(treatyId);
+      if (t.partyA !== playerId && t.partyB !== playerId) {
+        throw new CommandError('not-owner', 'you are not party to that treaty');
+      }
+      if (t.brokenAt) throw new CommandError('already-complete', 'that treaty is already broken');
+
+      const player = tx.players.require(playerId);
+      const other = t.partyA === playerId ? t.partyB : t.partyA;
+
+      // A NAP takes 48 hours of public notice to leave. Walking out without it
+      // is possible and costs more — that is what "always priced" means.
+      const notice = t.kind === 'nap' ? BigInt(C.NAP_NOTICE_MS) : 0n;
+      const effectiveAt = this.clock + notice;
+      const penalty = t.kind === 'nap' ? C.REPUTATION_NAP_BREAK : C.REPUTATION_TREATY_BREAK;
+
+      tx.treaties.put({ ...t, brokenAt: effectiveAt });
+      tx.players.put({ ...player, reputation: player.reputation - penalty });
+
+      tx.appendEvent({
+        id: this.ids.next('log', this.clock),
+        worldId: this.worldId,
+        shardId: 'world',
+        occurredAt: this.clock,
+        kind: 'treaty.broken',
+        actorId: playerId,
+        subjectId: other,
+        payload: { treatyId, kind: t.kind, effectiveAt: effectiveAt.toString(), reputationLost: penalty },
+      });
+
+      // The other party is told immediately. A NAP that lapses silently is a
+      // trap, and the 48 hours exist precisely so it is not one.
+      this.emit('treaty.proposed', `player:${other}`, {
+        treatyId, from: playerId, kind: `${t.kind}-broken`, terms: { effectiveAt: effectiveAt.toString() },
+      });
+
+      return { treaty: { ...t, brokenAt: effectiveAt }, reputationLost: penalty, effectiveAt };
+    });
+  }
+
+  treatiesOf(playerId: Uuid): Treaty[] {
+    return this.store.read((tx) => tx.treaties.where((t) => t.partyA === playerId || t.partyB === playerId));
+  }
+
+  /**
+   * Everyone this player could plausibly treat with.
+   *
+   * Diplomacy needs a counterparty list, and "every player in the world" is the
+   * wrong one — it would name people the player has never seen. This is the
+   * owners of settlements on the player's own shard, which is what a map
+   * already discloses.
+   */
+  knownPlayers(playerId: Uuid): KnownPlayer[] {
+    return this.store.read((tx) => {
+      const shards = new Set(tx.settlements.where((s) => s.ownerId === playerId).map((s) => s.shardId));
+      const holdings = new Map<Uuid, number>();
+      for (const s of tx.settlements.all()) {
+        if (s.ownerId === undefined || s.ownerId === playerId || !shards.has(s.shardId)) continue;
+        holdings.set(s.ownerId, (holdings.get(s.ownerId) ?? 0) + 1);
+      }
+      const out: KnownPlayer[] = [];
+      for (const [id, count] of holdings) {
+        const p = tx.players.get(id);
+        if (!p) continue;
+        out.push({ id, name: p.name, reputation: p.reputation, allianceId: p.allianceId, holdings: count });
+      }
+      return out.sort((a, b) => a.name.localeCompare(b.name));
+    });
+  }
+
+  allianceOf(playerId: Uuid): { alliance: Alliance; members: AllianceMember[] } | undefined {
+    return this.store.read((tx) => {
+      const player = tx.players.require(playerId);
+      if (!player.allianceId) return undefined;
+      const alliance = tx.alliances.get(player.allianceId);
+      if (!alliance) return undefined;
+      return { alliance, members: tx.allianceMembers.where((m) => m.allianceId === alliance.id) };
+    });
+  }
+
   /** Reinforce a formation, diluting its veterancy by headcount. */
   reinforceFormation(commandId: Uuid, playerId: Uuid, formationId: Uuid, addedCount: number): Formation {
     return this.idempotent(commandId, (tx) => {
@@ -1217,7 +1730,8 @@ export class World {
       .on('RESEARCH_COMPLETE', (tx, e, now) => this.onResearchComplete(tx, e, now))
       .on('MOVEMENT_ARRIVE', (tx, e, now) => this.onMovementArrive(tx, e, now))
       .on('HEAVENS_ENVY_RESOLVE', (tx, e, now) => this.onEnvyResolve(tx, e, now))
-      .on('TRIBULATION_WINDOW', (tx, e, now) => this.onTribulation(tx, e, now));
+      .on('TRIBULATION_WINDOW', (tx, e, now) => this.onTribulation(tx, e, now))
+      .on('CONVOY_ARRIVE', (tx, e, now) => this.onConvoyArrive(tx, e, now));
   }
 
   private onBuildComplete(tx: Tx, e: ScheduledEvent, now: Millis): void {
@@ -1245,8 +1759,14 @@ export class World {
 
     // Capacity rises with Logistics buildings, so recompute it here rather than
     // letting a stale cap silently throttle production.
+    //
+    // The view is built ONCE, outside the loop. Building it per stockpile meant
+    // three full table scans and a sort for each resource, to re-derive a
+    // building list that the new level had already settled — the same answer,
+    // recomputed a dozen times.
+    const afterBuild = this.viewIn(tx, settlementId);
     for (const sp of tx.stockpiles.where((s) => s.settlementId === settlementId)) {
-      tx.stockpiles.put({ ...sp, capacity: storageCapacity(this.viewIn(tx, settlementId), sp.resourceKey) });
+      tx.stockpiles.put({ ...sp, capacity: storageCapacity(afterBuild, sp.resourceKey) });
     }
 
     tx.appendEvent({
@@ -1548,6 +2068,27 @@ export class World {
     this.emit('battle.resolved', `player:${m.ownerId}`, { battleId: battle.id, settlementId: target.id, outcome: result.report.outcome, summary });
   }
 
+  /** A haul convoy lands. Cargo joins the destination's stockpile, capped. */
+  private onConvoyArrive(tx: Tx, e: ScheduledEvent, now: Millis): void {
+    const { movementId } = e.payload as { movementId: string };
+    const m = tx.movements.get(movementId);
+    if (!m) return;
+    tx.movements.delete(movementId);
+
+    for (const [key, amount] of Object.entries(m.cargo ?? {})) {
+      const existing = tx.stockpiles.get(m.targetId, key);
+      const capacity = existing?.capacity ?? BigInt(C.BASE_STORAGE);
+      const held = existing?.amount ?? 0n;
+      // Overflow is discarded here exactly as it is in production. Hauling a
+      // surplus into a full warehouse loses it just the same.
+      const landed = held + BigInt(amount) > capacity ? capacity : held + BigInt(amount);
+      tx.stockpiles.put({ settlementId: m.targetId, resourceKey: key, amount: landed, capacity });
+    }
+
+    this.emit('movement.arrived', `player:${m.ownerId}`, { movementId, result: 'delivered' });
+    void now;
+  }
+
   /**
    * A tribulation resolves.
    *
@@ -1630,16 +2171,30 @@ export class World {
   private onEnvyResolve(tx: Tx, e: ScheduledEvent, now: Millis): void {
     const players = tx.players.all().filter((p) => p.shardHoursPurchased30d > 0);
     // Linked accounts aggregate, so alt-splitting does not dodge the mark.
+    //
+    // Each player is pushed onto their group's existing array. Rebuilding the
+    // array on every insert — the spread that used to be here — copied the
+    // whole group per member, which is quadratic in the size of exactly the
+    // thing this check exists to catch: a large ring of linked accounts.
     const byGroup = new Map<string, Player[]>();
+    // The group's running total is accumulated in the same pass, so the ranking
+    // below does not have to walk every group a second time.
+    const totals = new Map<string, number>();
     for (const p of players) {
       const key = p.linkGroupId ?? p.id;
-      byGroup.set(key, [...(byGroup.get(key) ?? []), p]);
+      const group = byGroup.get(key);
+      if (group) group.push(p);
+      else byGroup.set(key, [p]);
+      totals.set(key, (totals.get(key) ?? 0) + p.shardHoursPurchased30d);
     }
-    const ranked = [...byGroup.values()]
-      .map((group) => ({ group, total: group.reduce((n, p) => n + p.shardHoursPurchased30d, 0) }))
-      .filter((r) => r.total >= C.ENVY_MIN_SPEND_FLOOR)
-      .sort((a, b) => b.total - a.total)
-      .slice(0, 10);
+
+    const ranked: { group: Player[]; total: number }[] = [];
+    for (const [key, group] of byGroup) {
+      const total = totals.get(key)!;
+      if (total >= C.ENVY_MIN_SPEND_FLOOR) ranked.push({ group, total });
+    }
+    ranked.sort((a, b) => b.total - a.total);
+    ranked.length = Math.min(ranked.length, 10);
 
     const markedIds = new Set<string>();
     for (const r of ranked) for (const p of r.group) markedIds.add(p.id);
@@ -1664,42 +2219,141 @@ export class World {
   }
 
   /**
-   * A governor initiates the next job in its build order — at 2x, with no
-   * judgement. If it cannot afford the next item it STALLS rather than skipping
-   * ahead, and the stall surfaces on the attention dashboard.
+   * A governor initiates its next job — at 2x, with no judgement.
+   *
+   * ONE job, from whichever spec sheet comes first: build order, then training
+   * standing order, then research mandate, then resource policy. A governor
+   * does not run four things at once and does not choose between them; it
+   * works the list.
+   *
+   * And when it cannot start the next thing, IT STALLS RATHER THAN SKIPPING
+   * AHEAD (spec/04 §6). That stall is surfaced with its reason, because a
+   * silent stall is indistinguishable from a governor that is simply idle, and
+   * the difference is the whole point of writing a spec.
    */
   private runGovernorSpec(tx: Tx, settlementId: Uuid, now: Millis): void {
     const settlement = tx.settlements.get(settlementId);
     if (!settlement?.governorId || !settlement.ownerId) return;
-    const gov = tx.governors.get(settlement.governorId);
-    if (!gov) return;
+    const governor = tx.governors.get(settlement.governorId);
+    if (!governor) return;
 
     const view = this.viewIn(tx, settlementId);
-    if (view.queue.some((q) => q.slotKind === 'governor')) return;
 
-    for (const step of gov.specs.buildOrder) {
-      const existing = view.buildings.find((b) => b.buildingKey === step.buildingKey);
-      if ((existing?.level ?? 0) >= step.toLevel) continue;
-      try {
-        this.enqueue({
-          commandId: this.ids.next('gc', now),
-          playerId: settlement.ownerId,
-          settlementId,
-          kind: 'building',
-          targetKey: step.buildingKey,
-          slotKind: 'governor',
-        });
-      } catch {
-        // No judgement. The queue stalls on the first step it cannot start,
-        // rather than quietly reordering the player's intent.
-        this.emit('governor.stalled', `player:${settlement.ownerId}`, {
-          governorId: gov.id,
-          settlementId,
-          reason: `cannot start ${step.buildingKey}`,
-        });
-      }
+    // Escalation first: a governor that is meant to stop and shout must do
+    // that BEFORE it starts anything new. Otherwise the player learns about a
+    // lost province from the battle report, which is the published failure.
+    const incoming = tx.movements
+      .where((m) => m.targetId === settlementId && m.ownerId !== settlement.ownerId)
+      .reduce((n, m) => n + m.formations.reduce((k, f) => k + f.count, 0), 0);
+    const escalation = checkEscalation(governor.specs, { incomingForce: incoming, loyalty: settlement.loyalty });
+    if (escalation.alert) {
+      this.emit('governor.stalled', `player:${settlement.ownerId}`, {
+        governorId: governor.id, settlementId, reason: escalation.reason ?? 'escalation threshold reached',
+      });
+      if (escalation.pauseQueue) return;
+    }
+
+    const garrison = new Map<string, number>();
+    for (const f of tx.formations.where((f) => f.settlementId === settlementId)) {
+      garrison.set(f.unitKey, (garrison.get(f.unitKey) ?? 0) + f.count);
+    }
+
+    const intent = nextIntent({
+      governor,
+      view,
+      garrison,
+      researchLevels: this.researchLevels(tx, settlement.ownerId),
+      // A dead governor is one whose commander is gone. Running jobs continue;
+      // nothing new starts.
+      assassinated: governor.commanderId === '',
+      costOf: (key, v) =>
+        upgradeCost(key, v.buildings.find((b) => b.buildingKey === key)?.level ?? 0,
+          hqFactorFor(hqLevel(v)), 1, C.GOVERNOR_TIME_MULT).resources,
+    });
+    if (!intent) return;
+
+    if (intent.kind === 'stall') {
+      this.emit('governor.stalled', `player:${settlement.ownerId}`, {
+        governorId: governor.id, settlementId, reason: `${intent.sheet}: ${intent.reason}`,
+      });
       return;
     }
+
+    // Everything a governor initiates goes in at 2x, through the same command
+    // path a player uses — so it is subject to the same validation, spends the
+    // same resources, and can be seized back.
+    try {
+      if (intent.kind === 'build') {
+        this.enqueue({
+          commandId: this.ids.next('gc', now), playerId: settlement.ownerId, settlementId,
+          kind: 'building', targetKey: intent.buildingKey, slotKind: 'governor',
+        });
+      } else if (intent.kind === 'train') {
+        this.enqueue({
+          commandId: this.ids.next('gc', now), playerId: settlement.ownerId, settlementId,
+          kind: 'training', targetKey: intent.unitKey, quantity: intent.quantity, slotKind: 'governor',
+        });
+      } else if (intent.kind === 'research') {
+        this.enqueue({
+          commandId: this.ids.next('gc', now), playerId: settlement.ownerId, settlementId,
+          kind: 'research', targetKey: intent.researchKey, slotKind: 'governor',
+        });
+      } else if (intent.kind === 'haul') {
+        this.haulSurplus(tx, settlement.ownerId, settlementId, intent.targetId, intent.cargo, now);
+      }
+    } catch (e) {
+      // The command refused. That IS the stall, and the refusal carries the
+      // reason — which is exactly what the player needs to fix their spec.
+      this.emit('governor.stalled', `player:${settlement.ownerId}`, {
+        governorId: governor.id, settlementId,
+        reason: e instanceof CommandError ? e.message : 'the governor could not start its next job',
+      });
+    }
+  }
+
+  /**
+   * Move a surplus to where it is useful.
+   *
+   * Resources move ONLY as interceptable convoys (invariant §2.4). A governor
+   * hauling for you does not get a private pipe; it dispatches a movement that
+   * appears on the map like anyone else's.
+   */
+  private haulSurplus(
+    tx: Tx, playerId: Uuid, originId: Uuid, targetId: Uuid, cargo: Record<string, bigint>, now: Millis,
+  ): void {
+    const origin = tx.settlements.require(originId);
+    const target = tx.settlements.get(targetId);
+    if (!target || target.ownerId !== playerId) return;
+
+    for (const [key, amount] of Object.entries(cargo)) {
+      const sp = tx.stockpiles.get(originId, key);
+      if (!sp || sp.amount < amount) return;
+    }
+    for (const [key, amount] of Object.entries(cargo)) {
+      const sp = tx.stockpiles.get(originId, key)!;
+      tx.stockpiles.put({ ...sp, amount: sp.amount - amount });
+    }
+
+    const d = distance(origin.coordX, origin.coordY, target.coordX, target.coordY);
+    const movement: Movement = {
+      id: this.ids.next('mv', now),
+      shardId: origin.shardId,
+      ownerId: playerId,
+      originId,
+      targetId,
+      mission: 'haul',
+      formations: [],
+      cargo,
+      departsAt: now,
+      // Convoys are slower than armies and just as visible.
+      arrivesAt: now + travelTimeMs(d, C.CONVOY_SPEED, 1, 1, false),
+      revealedTo: [],
+    };
+    tx.movements.put(movement);
+    this.scheduler.schedule(tx, {
+      shardId: origin.shardId, executeAt: movement.arrivesAt,
+      kind: 'CONVOY_ARRIVE', payload: { movementId: movement.id },
+    });
   }
 
   // ==========================================================================
@@ -1735,7 +2389,7 @@ export class World {
   } {
     return this.store.read((tx) => {
       const player = tx.players.require(playerId);
-      const income = qiPerHour(tx.settlements.where((x) => x.ownerId === playerId).map((x) => this.viewIn(tx, x.id)));
+      const income = qiPerHour(this.viewsOfOwner(tx, playerId));
       const qi = accrueQi(player.qi, income.perHour, player.temporalDebt, player.lastQiAccruedAt ?? player.createdAt, this.clock);
       const next = Math.min(C.MAX_GRADE, player.cultivationGrade + 1);
       return {

@@ -113,3 +113,58 @@ rather than snapshots, and the two gameplay-carrying overlays (damage,
 Overdriven). This keeps the client dependency-free enough to deploy as a static
 site, and the renderer is isolated in `packages/client/src/map/` so swapping in
 PixiJS is a contained change if sprite counts demand it.
+
+## D6 — A commander's level is read off the player's most veteran formation
+
+`Governors` gates each tier on a commander level — Bailiff 5, Planetary 15,
+System 25, Sector 40 — but the workbook ships **no Commanders sheet**, and
+nothing in the spec set says where a commander's level comes from. The API
+contract (`spec/05 §2`) passes a `commanderId` and no level, so the server has
+to decide.
+
+**Decision.** The level is the highest veterancy level among the player's own
+formations, and `POST /v1/governors` never reads one from the request.
+
+Two things pinned it there. First, invariant §2.1: the tiers gate on this
+number, so a client that could state it could appoint a Sector Governor on its
+first day. Second, the four numbers place themselves — 5 through 40 is nowhere
+on the 1–42 cultivation ladder (a Bailiff would cost most of Era II, a Sector
+Governor would be endgame) and sits near the bottom of the 0–1337 level ladder
+that veterancy, formations and `Grades_Realms` all share.
+
+The consequences match the workbook's own notes column. A new player has
+nobody — every starting formation is green at level 0 — so delegation is earned
+by fighting; measured against the published XP curve, level 5 is roughly a dozen
+real engagements ("most players appoint their first by mid Era II") and level 40
+wants a genuinely veteran officer ("Era VI+. Rare.").
+
+This is a derivation rule rather than a balance constant, so it is recorded here
+rather than in `docs/ASSUMPTIONS.md` — that file is generated from the workbook
+readers and carries only missing *numbers*. `World.commanderLevelOf` is the
+single function to replace when a Commanders sheet arrives.
+
+## D7 — Transactions roll back by undo journal, not by snapshot
+
+`MemoryStore.transaction()` originally took a copy of all seventeen tables up
+front and restored it on failure. Correct, and priced badly: **every command
+paid a full copy of the world before doing any work**, while a typical command
+touches a handful of rows. Measured on a 300-holding world, an empty
+transaction cost 0.309 ms — more than reading a settlement.
+
+**Decision.** Each write records the row it is about to overwrite, and a
+rollback replays those entries backwards. Same guarantee, priced by what the
+transaction actually touched: the same empty transaction now costs 0.0002 ms
+and no longer grows with world size at all.
+
+Replaying **backwards** is what makes repeated writes to one row correct — the
+earliest entry for a row holds its pre-transaction value. `packages/engine/src/store.test.ts`
+pins the contract rather than the mechanism, including that case and the one
+where a rolled-back command must not stay recorded; those tests were checked
+against a deliberately broken implementation to confirm they can fail.
+
+**Known remaining cost.** Reading one settlement still scans the buildings,
+queue and stockpile tables, so it grows with world size (0.06 ms at 300
+holdings). A secondary index would fix it, but it would have to be unwound by
+the journal too, and the path already handles roughly 16,000 commands a second.
+Postgres indexes this properly; the in-memory store is deliberately the simple
+one (D4).

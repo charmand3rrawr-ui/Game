@@ -29,7 +29,7 @@ import {
   upgradeCost,
   type SeededWorld,
 } from '@ascendance/engine';
-import { BALANCE_REVISION, ASSUMED_CONSTANTS, BUILDINGS, HOLDINGS, RESEARCH, ROSTER, VETERANCY_TIERS, tryUnitDef } from '@ascendance/shared';
+import { BALANCE_REVISION, ASSUMED_CONSTANTS, BUILDINGS, C, GOVERNOR_SPECS, GOVERNOR_TIERS, HOLDINGS, RESEARCH, ROSTER, VETERANCY_TIERS, tryUnitDef } from '@ascendance/shared';
 import type { Api, ApiProblem, MeResponse, SettlementDetail, MapResponse, FormationDto, MovementDto, QueueItemDto, Meta } from './api.js';
 import { ApiError } from './api.js';
 
@@ -325,6 +325,110 @@ export const localApi: Api = {
   tierUp(formationId, track) {
     const { world, playerId } = ensureWorld();
     return wrap(() => wire(world.tierUp(crypto.randomUUID(), playerId, formationId, track)) as FormationDto);
+  },
+
+  governors() {
+    const { world, playerId } = ensureWorld();
+    return wrap(() => {
+      const mine = world.settlementsOf(playerId);
+      const byId = new Map(mine.map((st) => [st.id, st.name]));
+      return wire({
+        commanderLevel: world.commanderLevelOf(playerId),
+        tiers: GOVERNOR_TIERS,
+        sheets: GOVERNOR_SPECS,
+        settlements: mine.map((st) => ({ id: st.id, name: st.name, governorId: st.governorId })),
+        governors: world.governorsOf(playerId).map((g) => ({
+          ...g,
+          areaNames: g.areaRef.settlementIds.map((id) => byId.get(id) ?? id),
+        })),
+      }) as import('./api.js').GovernorsDto;
+    });
+  },
+
+  appointGovernor(args) {
+    const { world, playerId } = ensureWorld();
+    tick();
+    return wrap(() => wire(world.appointGovernor({
+      commandId: crypto.randomUUID(),
+      playerId,
+      commanderId: args.commanderId,
+      tier: args.tier as 'bailiff' | 'planetary' | 'system' | 'sector',
+      settlementIds: args.settlementIds,
+      specs: args.specs,
+      // Derived here exactly as the server derives it. The sandbox is not a
+      // laxer world — it is the same engine with the same gates.
+      commanderLevel: world.commanderLevelOf(playerId),
+    })) as unknown as import('./api.js').GovernorDto);
+  },
+
+  updateGovernorSpecs(governorId, specs) {
+    const { world, playerId } = ensureWorld();
+    tick();
+    return wrap(() => wire(
+      world.updateGovernorSpecs(crypto.randomUUID(), playerId, governorId, specs),
+    ) as unknown as import('./api.js').GovernorDto);
+  },
+
+  dismissGovernor(governorId) {
+    const { world, playerId } = ensureWorld();
+    tick();
+    return wrap(() => world.dismissGovernor(crypto.randomUUID(), playerId, governorId));
+  },
+
+  auditGovernor(governorId) {
+    const { world, playerId } = ensureWorld();
+    return wrap(() => world.audit(crypto.randomUUID(), playerId, governorId));
+  },
+
+  alliance() {
+    const { world, playerId } = ensureWorld();
+    return wrap(() => {
+      const held = world.allianceOf(playerId);
+      return wire({
+        alliance: held?.alliance ?? null,
+        members: held?.members ?? [],
+        maxMembers: C.ALLIANCE_MAX_MEMBERS,
+        treaties: world.treatiesOf(playerId),
+        known: world.knownPlayers(playerId),
+        me: playerId,
+        serverTime: Date.now(),
+        napNoticeMs: C.NAP_NOTICE_MS,
+        napBreakReputation: C.REPUTATION_NAP_BREAK,
+        treatyBreakReputation: C.REPUTATION_TREATY_BREAK,
+      }) as import('./api.js').AllianceDto;
+    });
+  },
+
+  createAlliance(name, tag) {
+    const { world, playerId } = ensureWorld();
+    tick();
+    return wrap(() => wire(world.createAlliance(crypto.randomUUID(), playerId, name, tag)) as NonNullable<import('./api.js').AllianceDto['alliance']>);
+  },
+
+  proposeTreaty(args) {
+    const { world, playerId } = ensureWorld();
+    tick();
+    return wrap(() => wire(world.proposeTreaty({
+      commandId: crypto.randomUUID(),
+      playerId,
+      counterpartyId: args.counterpartyId,
+      kind: args.kind as 'nap' | 'trade' | 'defensive' | 'tribute' | 'border' | 'war' | 'armistice',
+      terms: args.terms,
+    })) as import('./api.js').TreatyDto);
+  },
+
+  acceptTreaty(treatyId) {
+    const { world, playerId } = ensureWorld();
+    tick();
+    return wrap(() => wire(world.acceptTreaty(crypto.randomUUID(), playerId, treatyId)) as import('./api.js').TreatyDto);
+  },
+
+  breakTreaty(treatyId) {
+    const { world, playerId } = ensureWorld();
+    tick();
+    return wrap(() => wire(world.breakTreaty(crypto.randomUUID(), playerId, treatyId)) as {
+      treaty: import('./api.js').TreatyDto; reputationLost: number; effectiveAt: string;
+    });
   },
 };
 

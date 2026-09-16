@@ -17,6 +17,8 @@ import { Command } from './screens/Command.js';
 import { Formations } from './screens/Formations.js';
 import { Research } from './screens/Research.js';
 import { Cultivation } from './screens/Cultivation.js';
+import { Governors } from './screens/Governors.js';
+import { Diplomacy } from './screens/Diplomacy.js';
 import { BattleReport } from './screens/BattleReport.js';
 import { Simulator } from './screens/Simulator.js';
 import { Codex } from './screens/Codex.js';
@@ -31,6 +33,8 @@ const TABS = [
   { id: 'formations', glyph: '⚑', label: 'Forces' },
   { id: 'research', glyph: '⚙', label: 'Research' },
   { id: 'cultivation', glyph: '☯', label: 'Dao' },
+  { id: 'governors', glyph: '⚖', label: 'Stewards' },
+  { id: 'diplomacy', glyph: '⚯', label: 'Pacts' },
   { id: 'battle', glyph: '⛏', label: 'Reports' },
   { id: 'simulator', glyph: '≈', label: 'Sim' },
   { id: 'codex', glyph: '☷', label: 'Codex' },
@@ -156,6 +160,8 @@ export function App(): JSX.Element {
         {screen === 'formations' && <Formations />}
         {screen === 'research' && <Research />}
         {screen === 'cultivation' && <Cultivation />}
+        {screen === 'governors' && <Governors />}
+        {screen === 'diplomacy' && <Diplomacy />}
         {screen === 'battle' && <BattleReport />}
         {screen === 'simulator' && <Simulator />}
         {screen === 'codex' && <Codex />}

@@ -35,6 +35,17 @@ import {
   spendShardsSchema,
   tierUpSchema,
   cancelQueueSchema,
+  appointGovernorSchema,
+  updateGovernorSpecsSchema,
+  dismissGovernorSchema,
+  auditGovernorSchema,
+  createAllianceSchema,
+  joinAllianceSchema,
+  proposeTreatySchema,
+  acceptTreatySchema,
+  breakTreatySchema,
+  GOVERNOR_TIERS,
+  GOVERNOR_SPECS,
   type Problem,
   type ProblemType,
 } from '@ascendance/shared';
@@ -238,22 +249,36 @@ export async function buildApp(opts: AppOptions = {}): Promise<App> {
     const playerId = requirePlayer(req, seeded.playerId);
     // Returns only what the requester's vision permits. Everything else is
     // fogged — all layers begin fogged (spec/04 §8).
-    return wire({
-      settlements: world.store.read((tx) =>
-        tx.settlements.all().map((s) => ({
+    //
+    // ONE store read, not two, and the player's own holdings are collected into
+    // a Set as that single pass goes by. The movement filter previously called
+    // settlementsOf() — a full store read and table scan — once per movement,
+    // and then scanned the result linearly: on a busy map that was the whole
+    // settlement table walked once for every army in flight. A Set lookup is
+    // constant, and the holdings it holds were already in hand.
+    return wire(world.store.read((tx) => {
+      const mine = new Set<string>();
+      const settlements = [];
+      for (const s of tx.settlements.all()) {
+        const isMine = s.ownerId === playerId;
+        if (isMine) mine.add(s.id);
+        settlements.push({
           id: s.id, name: s.name, ownerId: s.ownerId, holdingType: s.holdingType,
           coordX: s.coordX, coordY: s.coordY, layer: s.layer,
-          mine: s.ownerId === playerId,
+          mine: isMine,
           integrity: s.integrity,
-        })),
-      ),
-      movements: world.store.read((tx) =>
-        tx.movements.all()
-          .filter((m) => m.ownerId === playerId || world.settlementsOf(playerId).some((s) => s.id === m.targetId))
-          .map((m) => ({ ...m, cargo: undefined })),
-      ),
-      void: req.query.bbox,
-    });
+        });
+      }
+
+      // Yours, or inbound on something of yours. Cargo is stripped: what a
+      // convoy carries is exactly what an interceptor is not told.
+      const movements = [];
+      for (const m of tx.movements.all()) {
+        if (m.ownerId === playerId || mine.has(m.targetId)) movements.push({ ...m, cargo: undefined });
+      }
+
+      return { settlements, movements, void: req.query.bbox };
+    }));
   });
 
   /**
@@ -412,6 +437,167 @@ export async function buildApp(opts: AppOptions = {}): Promise<App> {
     const body = tierUpSchema.parse(req.body);
     const track = (req.body as { track?: 'atk' | 'def' })?.track ?? 'atk';
     const out = world.tierUp(body.commandId, playerId, req.params.id, track);
+    tick();
+    return wire(out);
+  });
+
+  // ==========================================================================
+  // Governors (spec/04 §6, spec/05 §2)
+  //
+  // The whole system is one number — anything a governor initiates takes twice
+  // as long — and one behaviour: governors have NO judgement. A build order
+  // that meets a shortfall stalls rather than skipping ahead, and the stall
+  // surfaces on the attention dashboard. These routes exist to make that
+  // legible, not to soften it.
+  // ==========================================================================
+
+  fastify.get('/v1/governors', async (req) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const governors = world.governorsOf(playerId);
+    const mine = world.settlementsOf(playerId);
+    const byId = new Map(mine.map((st) => [st.id, st.name]));
+    return wire({
+      commanderLevel: world.commanderLevelOf(playerId),
+      tiers: GOVERNOR_TIERS,
+      sheets: GOVERNOR_SPECS,
+      settlements: mine.map((st) => ({
+        id: st.id,
+        name: st.name,
+        governorId: st.governorId,
+      })),
+      governors: governors.map((g) => ({
+        ...g,
+        // Named, because "governor 018bcfe5…" is not something a player can act on.
+        areaNames: g.areaRef.settlementIds.map((id: string) => byId.get(id) ?? id),
+      })),
+    });
+  });
+
+  fastify.post('/v1/governors', async (req, reply) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const body = appointGovernorSchema.parse(req.body);
+    const g = world.appointGovernor({
+      commandId: body.commandId,
+      playerId,
+      commanderId: body.commanderId,
+      tier: body.tier,
+      settlementIds: body.areaRef.settlementIds,
+      specs: body.specs,
+      // Derived, never taken from the request — see World.commanderLevelOf.
+      commanderLevel: world.commanderLevelOf(playerId),
+    });
+    tick();
+    return reply.status(201).send(wire(g));
+  });
+
+  fastify.patch<{ Params: { id: string } }>('/v1/governors/:id/specs', async (req) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const body = updateGovernorSpecsSchema.parse(req.body);
+    // Takes effect on the NEXT initiation. A job already running keeps its
+    // stored finishesAt — invariant §2.8.
+    const g = world.updateGovernorSpecs(body.commandId, playerId, req.params.id, body.specs);
+    tick();
+    return wire(g);
+  });
+
+  fastify.delete<{ Params: { id: string } }>('/v1/governors/:id', async (req) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const body = dismissGovernorSchema.parse(req.body ?? { commandId: crypto.randomUUID() });
+    const out = world.dismissGovernor(body.commandId, playerId, req.params.id);
+    tick();
+    return wire(out);
+  });
+
+  /**
+   * Audit a governor.
+   *
+   * A subverted governor follows corrupted specs silently. The audit is the
+   * only way to find out, and it returns the diff between what you wrote and
+   * what it is actually running.
+   */
+  fastify.post<{ Params: { id: string } }>('/v1/governors/:id/audit', async (req) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const body = auditGovernorSchema.parse(req.body ?? { commandId: crypto.randomUUID() });
+    const out = world.audit(body.commandId, playerId, req.params.id);
+    tick();
+    return wire(out);
+  });
+
+  // ==========================================================================
+  // Alliances and treaties (spec/04 §7)
+  //
+  // Treaties carry mechanical teeth, not just text: a NAP hard-blocks attacks
+  // on the SERVER, in `dispatch`, not merely in the UI. Breaking one is always
+  // allowed and always priced — reputation never blocks an action.
+  // ==========================================================================
+
+  fastify.get('/v1/alliance', async (req) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const held = world.allianceOf(playerId);
+    return wire({
+      alliance: held?.alliance ?? null,
+      members: held?.members ?? [],
+      maxMembers: C.ALLIANCE_MAX_MEMBERS,
+      treaties: world.treatiesOf(playerId),
+      // Real counterparties, so the screen is not a form with nobody to send to.
+      known: world.knownPlayers(playerId),
+      me: playerId,
+      serverTime: Date.now(),
+      // What leaving a NAP costs in time, so the client can say "48 hours"
+      // rather than making the player discover it by trying.
+      napNoticeMs: C.NAP_NOTICE_MS,
+      napBreakReputation: C.REPUTATION_NAP_BREAK,
+      treatyBreakReputation: C.REPUTATION_TREATY_BREAK,
+    });
+  });
+
+  fastify.post('/v1/alliance', async (req, reply) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const body = createAllianceSchema.parse(req.body);
+    const a = world.createAlliance(body.commandId, playerId, body.name, body.tag);
+    tick();
+    return reply.status(201).send(wire(a));
+  });
+
+  fastify.post('/v1/alliance/join', async (req, reply) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const body = joinAllianceSchema.parse(req.body);
+    const m = world.joinAlliance(body.commandId, playerId, body.allianceId, body.role);
+    tick();
+    return reply.status(201).send(wire(m));
+  });
+
+  fastify.post('/v1/treaties', async (req, reply) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const body = proposeTreatySchema.parse(req.body);
+    const t = world.proposeTreaty({
+      commandId: body.commandId,
+      playerId,
+      counterpartyId: body.counterpartyId,
+      kind: body.kind,
+      terms: body.terms,
+      expiresAt: body.expiresAt === undefined ? undefined : BigInt(body.expiresAt),
+    });
+    tick();
+    // It binds only once the counterparty accepts. Until then it constrains
+    // nobody — in particular an unsigned NAP does not block an attack.
+    return reply.status(201).send(wire(t));
+  });
+
+  fastify.post<{ Params: { id: string } }>('/v1/treaties/:id/accept', async (req) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const body = acceptTreatySchema.parse(req.body);
+    const t = world.acceptTreaty(body.commandId, playerId, req.params.id);
+    tick();
+    return wire(t);
+  });
+
+  fastify.post<{ Params: { id: string } }>('/v1/treaties/:id/break', async (req) => {
+    const playerId = requirePlayer(req, seeded.playerId);
+    const body = breakTreatySchema.parse(req.body);
+    // Returns the reputation cost and the instant the exit takes effect. The
+    // notice period is real: the treaty still binds until then.
+    const out = world.breakTreaty(body.commandId, playerId, req.params.id);
     tick();
     return wire(out);
   });

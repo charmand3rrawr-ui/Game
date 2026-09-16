@@ -164,3 +164,17 @@ export function bigMax(a: bigint, b: bigint): bigint {
 export function bigMin(a: bigint, b: bigint): bigint {
   return a < b ? a : b;
 }
+
+/**
+ * Count the rows matching a predicate, without building an array to hold them.
+ *
+ * `xs.filter(p).length` allocates a whole array and then reads one number off
+ * it. That is harmless once; it is not harmless on the queue-slot check, which
+ * runs on every single enqueue, or inside the attention dashboard's per-holding
+ * loop. This is the same answer with nothing left over.
+ */
+export function countWhere<T>(xs: readonly T[], pred: (x: T) => boolean): number {
+  let n = 0;
+  for (const x of xs) if (pred(x)) n++;
+  return n;
+}

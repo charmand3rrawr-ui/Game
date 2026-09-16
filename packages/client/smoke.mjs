@@ -16,6 +16,8 @@
 
 import { spawn } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
+import { existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright';
 
@@ -23,7 +25,7 @@ const PORT = 4173;
 const SITE = `http://127.0.0.1:${PORT}/`;
 const OUT = new URL('./smoke-output/', import.meta.url).pathname;
 
-const TABS = ['Attention', 'Map', 'Holding', 'Command', 'Forces', 'Research', 'Dao', 'Reports', 'Sim', 'Codex'];
+const TABS = ['Attention', 'Map', 'Holding', 'Command', 'Forces', 'Research', 'Dao', 'Stewards', 'Pacts', 'Reports', 'Sim', 'Codex'];
 
 /**
  * Click something in the page body.
@@ -57,6 +59,27 @@ function check(name, ok, detail) {
   }
 }
 
+/**
+ * A chromium already on disk, whatever build number it carries.
+ *
+ * Playwright pins an exact build and refuses anything else, which turns a
+ * perfectly good preinstalled browser into a hard failure telling you to
+ * download one. Returns undefined when there is nothing to find, so Playwright
+ * falls back to its own resolution and its own error message.
+ */
+function findLocalChromium() {
+  const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  if (!root || !existsSync(root)) return undefined;
+  for (const dir of readdirSync(root)) {
+    if (!dir.startsWith('chromium')) continue;
+    for (const rel of ['chrome-linux/chrome', 'chrome-mac/Chromium.app/Contents/MacOS/Chromium']) {
+      const candidate = join(root, dir, rel);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
 async function main() {
   await mkdir(OUT, { recursive: true });
 
@@ -70,8 +93,11 @@ async function main() {
     await waitForServer();
 
     // CI installs the browser Playwright expects. A sandbox that already has
-    // one can point at it with CHROMIUM_PATH instead of downloading a second.
-    const executablePath = process.env.CHROMIUM_PATH;
+    // one can point at it with CHROMIUM_PATH instead of downloading a second —
+    // and if it has one under the conventional PLAYWRIGHT_BROWSERS_PATH but at
+    // a different build number than this Playwright pins, find it rather than
+    // failing with a download instruction that the sandbox cannot follow.
+    const executablePath = process.env.CHROMIUM_PATH ?? findLocalChromium();
     const browser = await chromium.launch(executablePath ? { executablePath } : {});
     // Phone width: nothing important may REQUIRE a desktop (spec/06 §1).
     const page = await browser.newPage({ viewport: { width: 420, height: 900 } });
@@ -179,6 +205,41 @@ async function main() {
     check('cultivation shows the realm and the Qi income', /realm/i.test(dao) && /QI/i.test(dao), dao.slice(0, 80));
     check('a breakthrough states its odds before you commit', /CHANCE TO PASS/i.test(dao));
     await page.screenshot({ path: `${OUT}/23-cultivation.png` });
+
+    // --- GOVERNORS --------------------------------------------------------
+    // spec/08 M8. The whole system is one number, and a governor with no
+    // judgement is the design rather than a bug — so the screen has to say
+    // both, up front, before a player delegates anything.
+    await tab(TABS.indexOf('Stewards'));
+    await page.waitForTimeout(1200);
+    const stewards = await page.locator('.main').innerText();
+    check('governors state the 2x price up front', /twice as long/i.test(stewards), stewards.slice(0, 90));
+    check('the commander level and its tiers are shown', /COMMANDER LEVEL/i.test(stewards) && /Bailiff/i.test(stewards));
+    // A fresh player has no veteran formation, so every tier is out of reach.
+    // That gate is the feature; what matters is that it explains itself.
+    check('an unreachable tier says what it needs', /needs level \d+/i.test(stewards), stewards.slice(0, 120));
+    await page.screenshot({ path: `${OUT}/24-governors.png` });
+
+    // --- DIPLOMACY --------------------------------------------------------
+    // A treaty has teeth on the server, and a PROPOSAL has none at all until
+    // it is signed. Both have to be legible here or players will mistake an
+    // unsigned offer for protection.
+    await tab(TABS.indexOf('Pacts'));
+    await page.waitForTimeout(1200);
+    const pacts = await page.locator('.main').innerText();
+    check('treaties are described as server-enforced', /refuses the order/i.test(pacts), pacts.slice(0, 90));
+    const counterparty = page.locator('select').first();
+    const hasCounterparties = (await counterparty.locator('option').count()) > 1;
+    check('there are real counterparties to treat with', hasCounterparties);
+    if (hasCounterparties) {
+      await counterparty.selectOption({ index: 1 });
+      await page.waitForTimeout(300);
+      await clickIn(page.locator('button:has-text("Send the proposal")'));
+      await page.waitForTimeout(1600);
+      const pactsAfter = await page.locator('.main').innerText();
+      check('an unsigned proposal says it binds nobody', /binds nobody/i.test(pactsAfter), pactsAfter.slice(0, 120));
+    }
+    await page.screenshot({ path: `${OUT}/25-diplomacy.png` });
 
     // --- the simulator runs the real resolver ----------------------------
     await tab(TABS.indexOf('Sim'));

@@ -165,6 +165,179 @@ describe('M6 acceptance — the API contract', () => {
   });
 });
 
+describe('governor and alliance endpoints (M8)', () => {
+  async function patch(url: string, payload: unknown): Promise<{ status: number; body: Record<string, unknown> }> {
+    const r = await app.fastify.inject({ method: 'PATCH', url, payload: payload as object });
+    return { status: r.statusCode, body: r.json() };
+  }
+  async function del(url: string, payload: unknown): Promise<{ status: number; body: Record<string, unknown> }> {
+    const r = await app.fastify.inject({ method: 'DELETE', url, payload: payload as object });
+    return { status: r.statusCode, body: r.json() };
+  }
+
+  const specs = {
+    buildOrder: [{ buildingKey: '1_fishery', toLevel: 1 }],
+    trainingStandingOrder: [],
+    researchMandate: [],
+    resourcePolicy: { keepDays: 3 },
+    defencePosture: 'garrison' as const,
+    escalationRules: { alertOnIncoming: true, alertBelowLoyalty: 40 },
+  };
+
+  /**
+   * Give the player an officer.
+   *
+   * A seeded player has none — every starting formation is green — because the
+   * commander level is read off their most experienced formation. Delegation is
+   * something you earn by fighting, so a test that wants a governor has to do
+   * the equivalent of having fought.
+   */
+  function veteran(level: number): void {
+    app.world.store.transaction((tx) => {
+      const f = tx.formations.where((x) => x.ownerId === app.playerId)[0]!;
+      tx.formations.put({ ...f, atkLevel: level });
+    });
+  }
+
+  it('never takes the commander level from the client', async () => {
+    // The tiers gate on it, so a client that could state it could appoint a
+    // Sector Governor on day one. The schema has no field for it, and sending
+    // one anyway changes nothing.
+    const { body } = await get('/v1/governors');
+    const level = body['commanderLevel'] as number;
+    expect(typeof level).toBe('number');
+
+    const { status } = await post('/v1/governors', {
+      commandId: cmd(),
+      commanderId: cmd(),
+      tier: 'sector',
+      areaRef: { layer: 'surface', settlementIds: [homeId] },
+      specs,
+      commanderLevel: 999,
+    });
+    // Refused on the server's own reading of the level, not the one sent.
+    expect(status).toBe(422);
+  });
+
+  it('refuses every tier while the player has no officer to appoint', async () => {
+    const { body } = await get('/v1/governors');
+    expect(body['commanderLevel']).toBe(0);
+    const { status } = await post('/v1/governors', {
+      commandId: cmd(), commanderId: cmd(), tier: 'bailiff',
+      areaRef: { layer: 'surface', settlementIds: [homeId] }, specs,
+    });
+    expect(status).toBe(422);
+  });
+
+  it('appoints, re-specs, audits and dismisses a governor', async () => {
+    veteran(20);
+    const { body: before } = await get('/v1/governors');
+    expect(before['commanderLevel']).toBe(20);
+    const tier = (before['tiers'] as { key: string; commanderLevel: number })
+      && (before['tiers'] as { key: string; commanderLevel: number }[])
+        .filter((t) => t.commanderLevel <= 20)
+        .sort((a, b) => b.commanderLevel - a.commanderLevel)[0]!;
+
+    const appointed = await post('/v1/governors', {
+      commandId: cmd(), commanderId: cmd(), tier: tier.key,
+      areaRef: { layer: 'surface', settlementIds: [homeId] }, specs,
+    });
+    expect(appointed.status).toBe(201);
+    const governorId = appointed.body['id'] as string;
+
+    const listed = await get('/v1/governors');
+    expect((listed.body['governors'] as unknown[]).length).toBe(1);
+    // Named, not just identified — "governor 018bcfe5…" is not actionable.
+    expect((listed.body['governors'] as { areaNames: string[] }[])[0]!.areaNames.length).toBe(1);
+
+    const respec = await patch(`/v1/governors/${governorId}/specs`, {
+      commandId: cmd(),
+      specs: { ...specs, defencePosture: 'fortify' },
+    });
+    expect(respec.status).toBe(200);
+    expect((respec.body['specs'] as { defencePosture: string }).defencePosture).toBe('fortify');
+
+    const audited = await post(`/v1/governors/${governorId}/audit`, { commandId: cmd() });
+    expect(audited.status).toBe(200);
+    expect(audited.body['subverted']).toBe(false);
+
+    const dismissed = await del(`/v1/governors/${governorId}`, { commandId: cmd() });
+    expect(dismissed.status).toBe(200);
+    expect((await get('/v1/governors')).body['governors']).toEqual([]);
+  });
+
+  it('offers real counterparties, not an empty form', async () => {
+    const { body } = await get('/v1/alliance');
+    const known = body['known'] as { id: string; name: string; holdings: number }[];
+    expect(known.length).toBeGreaterThan(0);
+    for (const k of known) {
+      expect(k.id).not.toBe(body['me']);
+      expect(k.holdings).toBeGreaterThan(0);
+    }
+  });
+
+  it('founds an alliance and refuses a second one', async () => {
+    const first = await post('/v1/alliance', { commandId: cmd(), name: 'The Verrin Compact', tag: 'VRN' });
+    expect(first.status).toBe(201);
+
+    const { body } = await get('/v1/alliance');
+    expect((body['alliance'] as { tag: string }).tag).toBe('VRN');
+    expect((body['members'] as { role: string }[])[0]!.role).toBe('leader');
+    expect(body['maxMembers']).toBe(60);
+
+    const second = await post('/v1/alliance', { commandId: cmd(), name: 'Second Thoughts', tag: 'SND' });
+    expect(second.status).toBe(422);
+  });
+
+  it('a proposed NAP binds nobody until it is signed', async () => {
+    const { body: dip } = await get('/v1/alliance');
+    const other = (dip['known'] as { id: string }[])[0]!.id;
+
+    const proposed = await post('/v1/treaties', { commandId: cmd(), kind: 'nap', counterpartyId: other, terms: {} });
+    expect(proposed.status).toBe(201);
+    // Unsigned: signedAt is zero, and nothing about the world has changed.
+    expect(proposed.body['signedAt']).toBe('0');
+    expect(proposed.body['partyB']).toBe(other);
+
+    const listed = await get('/v1/alliance');
+    expect((listed.body['treaties'] as unknown[]).length).toBe(1);
+  });
+
+  it('breaking a NAP states its price and its notice period', async () => {
+    const { body: dip } = await get('/v1/alliance');
+    const other = (dip['known'] as { id: string }[])[0]!.id;
+    expect(Number(dip['napNoticeMs'])).toBe(172_800_000);
+
+    const proposed = await post('/v1/treaties', { commandId: cmd(), kind: 'nap', counterpartyId: other, terms: {} });
+    const treatyId = proposed.body['id'] as string;
+
+    // Only the counterparty can sign. Signing your own proposal would make a
+    // treaty a unilateral act, which is exactly what it must not be.
+    const selfSign = await post(`/v1/treaties/${treatyId}/accept`, { commandId: cmd() });
+    expect(selfSign.status).toBe(403);
+    expect(problemCode(selfSign.body as unknown as Problem)).toBe('not-owner');
+
+    const broken = await post(`/v1/treaties/${treatyId}/break`, { commandId: cmd() });
+    expect(broken.status).toBe(200);
+    expect(broken.body['reputationLost']).toBeGreaterThan(0);
+    // The exit lands 48 hours out — it still binds until then.
+    expect(BigInt(broken.body['effectiveAt'] as string) - T0).toBe(172_800_000n);
+  });
+
+  it('replaying a governor command does not appoint twice', async () => {
+    veteran(20);
+    const id = cmd();
+    const payload = {
+      commandId: id, commanderId: cmd(), tier: 'bailiff',
+      areaRef: { layer: 'surface', settlementIds: [homeId] }, specs,
+    };
+    const a = await post('/v1/governors', payload);
+    const b = await post('/v1/governors', payload);
+    expect(a.body['id']).toBe(b.body['id']);
+    expect((await get('/v1/governors')).body['governors']).toHaveLength(1);
+  });
+});
+
 describe('rate limiting', () => {
   it('permits a coordinated wave but rejects a machine-gun pattern', () => {
     // Sending twenty armies to land three seconds apart is the game played

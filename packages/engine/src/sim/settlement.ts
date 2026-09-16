@@ -24,6 +24,7 @@ import {
   BUILDINGS,
   HOLDINGS,
   accrue,
+  countWhere,
   buildingCost,
   buildTimeMs,
   gradeForLevel,
@@ -57,10 +58,24 @@ export function holdingRef(key: string): RefHolding {
   return h;
 }
 
-export function buildingsForEra(era: number): RefBuilding[] {
+/**
+ * Cached per era, because there are only six of them and the answer is fixed.
+ *
+ * This runs on every settlement screen open, and re-filtered the whole building
+ * catalogue each time to produce one of six possible lists. The result is
+ * derived purely from generated balance data, so it cannot go stale within a
+ * process; it is frozen so a caller cannot mutate the shared copy.
+ */
+const BUILDINGS_BY_ERA = new Map<number, readonly RefBuilding[]>();
+
+export function buildingsForEra(era: number): readonly RefBuilding[] {
+  const hit = BUILDINGS_BY_ERA.get(era);
+  if (hit) return hit;
   // Heritage: buildings from earlier eras never stop working, so they remain
   // buildable too (spec/04 §1). Nothing in this game becomes obsolete.
-  return BUILDINGS.filter((b) => b.era <= era);
+  const list = Object.freeze(BUILDINGS.filter((b) => b.era <= era));
+  BUILDINGS_BY_ERA.set(era, list);
+  return list;
 }
 
 // ============================================================================
@@ -196,9 +211,17 @@ export function validateBuildingEnqueue(
   //    This is what hard-stops the "one perfect megacity" pattern.
   const targetGrade = gradeForLevel(targetLevel);
   if (targetGrade > gradeForLevel(currentLevel)) {
-    const gradeOf = (b: Building): number => gradeForLevel(b.level);
-    const above30 = view.buildings.filter((b) => b.buildingKey !== key && gradeOf(b) > C.SPEC_CAP_G30_GRADE).length;
-    const above20 = view.buildings.filter((b) => b.buildingKey !== key && gradeOf(b) > C.SPEC_CAP_G20_GRADE).length;
+    // Both thresholds are counted in ONE walk. Two filters meant two passes
+    // over the buildings and two throwaway arrays, built only to be measured —
+    // and the grade of each building was recomputed for each threshold.
+    let above30 = 0;
+    let above20 = 0;
+    for (const b of view.buildings) {
+      if (b.buildingKey === key) continue;
+      const grade = gradeForLevel(b.level);
+      if (grade > C.SPEC_CAP_G30_GRADE) above30++;
+      if (grade > C.SPEC_CAP_G20_GRADE) above20++;
+    }
     if (targetGrade > C.SPEC_CAP_G30_GRADE && above30 >= C.SPEC_CAP_G30) {
       return {
         ok: false,
@@ -220,7 +243,7 @@ export function validateBuildingEnqueue(
   // 4. QUEUE SLOTS. Personal slots come from the HQ; governor slots are
   //    separate and parallel. Personal-slot scarcity is the ONLY thing
   //    preventing a player from governing everything and seizing it all back.
-  const used = view.queue.filter((q) => q.slotKind === slotKind).length;
+  const used = countWhere(view.queue, (q) => q.slotKind === slotKind);
   const available = slotKind === 'personal' ? personalQueueSlots(gradeForLevel(hqLevel(view))) : C.GOVERNOR_QUEUE_SLOTS;
   if (used >= available) {
     return {

@@ -12,7 +12,7 @@ balance owner to confirm or correct.
 Correcting one means adding the real value to the appropriate workbook sheet and
 changing its reader in the importer from `C.assumed(...)` to `C.fromWorkbook(...)`.
 
-## 48 open assumptions
+## 55 open assumptions
 
 | Constant | Assumed value | Why it is not in the workbook | Reasoning for the value |
 |---|---|---|---|
@@ -49,6 +49,9 @@ changing its reader in the importer from `C.assumed(...)` to `C.fromWorkbook(...
 | `QI_PER_SPIRIT_VEIN` | 12 | Cultivation!Qi names Spirit Vein tiles as a source without a rate | Qi per hour per Spirit Vein tile, which is what makes those tiles worth fighting over. |
 | `QI_IDLE_PER_HOUR` | 2 | Cultivation!Qi lists idle meditation as a source without a rate | Qi per hour from meditation alone, so a player with no cultivation buildings still advances, slowly, and the realm ladder is never completely shut to them. |
 | `CULTIVATION_AURA_PER_GRADE` | 0.004 | Cultivation!Balance caps says realm bonuses fold into the joint cap without giving a per-grade rate | Combat multiplier per cultivation grade, inside the +40% joint cap. Deliberately small: Cultivation!Balance caps is explicit that realms primarily gate content rather than grant power. |
+| `REPUTATION_NAP_BREAK` | 25 | spec/04 §7 says breaches cost reputation without giving an amount | Reputation lost for breaking a non-aggression pact. Reputation never BLOCKS an action — it prices one — and it feeds karma-weighted tribulations, so an oathbreaker pays in the cultivation game as well as the diplomatic one. |
+| `REPUTATION_TREATY_BREAK` | 10 | spec/04 §7 says breaches cost reputation without giving an amount | Reputation lost for breaking any other treaty. Lower than a NAP: a trade pact is a deal, a non-aggression pact is a promise not to kill someone. |
+| `CONVOY_SPEED` | 12 | spec/04 §2 lists convoy types by era (carts, wagons, rail, void haulers) without speeds | Map units per hour for a haul convoy. Slower than an army on purpose: resources moving are resources exposed, and that exposure is what makes supply-line interdiction meaningful. |
 | `CULTURE_PRESSURE_K` | 0.0004 | GDD §8.4 gives the shape ((cultureDelta)^2 * k, capped) but not k | Calibrated so a 100-point culture lead flips an adjacent plot over roughly three weeks, matching spec/04 §3 ("flip adjacent low-culture plots over weeks"). |
 | `CULTURE_PRESSURE_CAP` | 12 | GDD §8.4 states the cap exists but not its value | Caps a runaway culture lead at roughly one plot flip per day. |
 | `ATTRITION_ESCALATION` | 0.5 | spec/03 §4 says attrition escalates but does not give the rate | Each further hour out of supply adds 50% of the base 3% rate, so a stranded army becomes a problem to solve rather than a leak to tolerate. |
@@ -64,11 +67,15 @@ changing its reader in the importer from `C.assumed(...)` to `C.fromWorkbook(...
 | `WORKERS_PER_LEVEL` | 0.5 | Building_Framework says buildings draw Workers from population without a rate | Half a worker per level per plot, so understaffing is the normal state of a growing settlement. |
 | `UPKEEP_COIN_PER_LEVEL` | 0.05 | spec/04 §1 states Era II+ Coin upkeep without a rate | Coin per level per plot from Era II. Sized so a settlement of ordinary buildings pays its own way and an over-built one does not, which is what makes Brownout a real pressure. |
 | `UPKEEP_POWER_PER_LEVEL` | 0.02 | spec/04 §1 states Era IV+ Electricity draw without a rate | Electricity per level per plot from Era IV. Lower than the Coin rate because power is a second, narrower constraint layered on top rather than a replacement for it. |
+| `POSTURE_FORTIFY_BONUS` | 0.2 | Governor_Specs describes Turtle/Hold/Sally without giving their modifiers | Defensive bonus for Turtle. Large enough that the published failure mode — "defaults to Turtle, which loses winnable fights and wins unwinnable ones slowly" — is literally true. |
+| `POSTURE_SALLY_PENALTY` | 0.15 | Governor_Specs describes Sally without giving its modifier | Defence given up by meeting an attacker in the field instead of holding the walls. |
+| `HAUL_FLOOR_PER_DAY` | 5000 | Governor_Specs states stockpile floors in days without defining a day of consumption | Resources one day of a stockpile floor reserves. Until settlement consumption is modelled, a floor in days is read against this. |
+| `HAUL_MIN_CARGO` | 2000 | no published minimum convoy size | Smallest surplus worth dispatching a convoy for. Without it a resource policy produces a trickle of interceptable haulers rather than a supply line. |
 
 ## What is NOT assumed
 
 21 constants are read directly from workbook cells,
-48 are fixed by the specification text, and
+50 are fixed by the specification text, and
 6 are computed from the others so they cannot drift.
 The constants naming the six calibration anchors and the core formula shapes can
 never be assumed — the importer fails the build if one ever is.

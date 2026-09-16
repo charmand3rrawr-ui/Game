@@ -19,7 +19,9 @@ import {
   type FormationDto, type MapResponse, type MeResponse, type Meta, type MovementDto, type SettlementDetail,
 } from './api.js';
 
-export type Screen = 'attention' | 'map' | 'settlement' | 'command' | 'formations' | 'research' | 'cultivation' | 'battle' | 'simulator' | 'codex';
+export type Screen =
+  | 'attention' | 'map' | 'settlement' | 'command' | 'formations' | 'research'
+  | 'cultivation' | 'governors' | 'diplomacy' | 'battle' | 'simulator' | 'codex';
 
 export interface Toast {
   id: number;
