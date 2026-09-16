@@ -26,6 +26,7 @@
  */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { buildManifest, composeBrief, statusOf, type AssetEntry } from './build-assets.js';
@@ -249,6 +250,43 @@ function flag(argv: string[], name: string): string | undefined {
   return i === -1 ? undefined : argv[i + 1];
 }
 
+/**
+ * Commit and push one drawn sprite.
+ *
+ * Required for any unattended or scheduled run. These containers are
+ * ephemeral: a scheduled job that draws art into a working tree and then has
+ * its container reclaimed has spent real money to produce nothing, and the
+ * ledger it updated goes with it. Committing per sprite rather than per batch
+ * means an interrupted run keeps everything it had already paid for.
+ *
+ * Push failures are reported but do not stop the run — the commit is local and
+ * survives, so the next successful push carries it.
+ */
+function commitOne(entry: AssetEntry): void {
+  const git = (...args: string[]): string =>
+    execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim();
+
+  const branch = git('rev-parse', '--abbrev-ref', 'HEAD');
+  git('add', '--', `packages/client/public/${entry.path}`, 'assets/drawn.json', 'assets/LEDGER.md');
+  // Nothing staged means nothing changed; committing would be a lie.
+  const staged = git('diff', '--cached', '--name-only');
+  if (staged === '') return;
+
+  git(
+    'commit', '-m',
+    `Draw ${entry.id}\n\n` +
+    `${entry.subject}${entry.tier !== undefined ? `, visual tier ${entry.tier}` : ''}. ` +
+    `Generated from the workbook brief ${entry.briefHash}.\n\n` +
+    'Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>',
+  );
+  try {
+    git('push', '-u', 'origin', branch);
+  } catch (e) {
+    console.error(`        push failed (the commit is local and will go with the next one): ${
+      e instanceof Error ? e.message.split('\n')[0] : String(e)}`);
+  }
+}
+
 export async function main(argv: string[]): Promise<void> {
   const wanted = flag(argv, '--provider') ?? PROVIDERS[0]!.name;
   const provider = PROVIDERS.find((p) => p.name === wanted);
@@ -277,6 +315,7 @@ export async function main(argv: string[]): Promise<void> {
   const limit = Number(flag(argv, '--limit') ?? 1);
   const force = argv.includes('--force');
   const dryRun = argv.includes('--dry-run');
+  const commit = argv.includes('--commit');
 
   let queue = only
     ? entries.filter((e) => e.id === only)
@@ -299,8 +338,13 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
 
-  console.log(`${dryRun ? 'would draw' : 'drawing'} ${queue.length} sprite(s) with ${provider.name}\n`);
+  const everyMinutes = Number(flag(argv, '--every') ?? 0);
+  console.log(
+    `${dryRun ? 'would draw' : 'drawing'} ${queue.length} sprite(s) with ${provider.name}` +
+    (everyMinutes > 0 ? `, ${everyMinutes} minutes apart` : '') + '\n',
+  );
 
+  let drawnThisRun = 0;
   for (const entry of queue) {
     const file = join(PUBLIC, entry.path);
     if (existsSync(file) && !force) {
@@ -314,6 +358,13 @@ export async function main(argv: string[]): Promise<void> {
       continue;
     }
 
+    // Pace between calls, not before the first — a scheduled run that sleeps
+    // before doing anything looks indistinguishable from one that has hung.
+    if (everyMinutes > 0 && drawnThisRun > 0) {
+      console.log(`  wait  ${everyMinutes} min before the next`);
+      await new Promise((r) => setTimeout(r, everyMinutes * 60_000));
+    }
+    drawnThisRun++;
     process.stdout.write(`  draw  ${entry.id} … `);
     try {
       const raw = await provider.generate(prompt, entry, key);
@@ -326,6 +377,12 @@ export async function main(argv: string[]): Promise<void> {
       drawn[entry.id] = entry.briefHash;
       await writeFile(DRAWN, JSON.stringify(drawn, null, 2) + '\n', 'utf8');
       console.log(`ok (${(png.length / 1024).toFixed(0)} kB) -> ${entry.path}`);
+
+      if (commit) {
+        await rebuildLedger();
+        commitOne(entry);
+        console.log(`        committed and pushed`);
+      }
     } catch (e) {
       console.log('FAILED');
       console.error(`        ${e instanceof Error ? e.message : String(e)}`);
