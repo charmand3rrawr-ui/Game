@@ -51,6 +51,9 @@ export interface Provider {
   generate(prompt: string, entry: AssetEntry, key: string): Promise<Buffer>;
 }
 
+/** What the last call actually cost, as the provider reported it. */
+let lastUsage: { quality?: string; tokens?: number } = {};
+
 /** Fail loudly on a non-2xx rather than writing an error page out as a PNG. */
 async function expectOk(res: Response, provider: string): Promise<void> {
   if (res.ok) return;
@@ -66,12 +69,25 @@ const OPENAI: Provider = {
   // a sprite with a painted background cannot sit on the settlement ground.
   nativeTransparency: true,
   async generate(prompt, _entry, key) {
-    // Configurable, and NOT defaulted to gpt-image-1: that model is retired on
-    // 23 October 2026, and a hardcoded id would turn every scheduled run into a
-    // silent failure on a date nobody was watching for. Override with
-    // OPENAI_IMAGE_MODEL when a newer one lands.
+    // Every field here is checked against OpenAI's published OpenAPI spec
+    // (github.com/openai/openai-openapi), not against memory.
+    //
+    // MODEL is configurable and deliberately not `gpt-image-1`: that one is
+    // retired on 23 October 2026, and a hardcoded id would turn every
+    // scheduled run into a silent failure on a date nobody was watching for.
+    // The spec lists newer options — gpt-image-2 and the gpt-image-2.5
+    // sunburst/flare snapshots — which are worth trying for sprite work.
     const model = process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-1.5';
-    const res = await fetch('https://api.openai.com/v1/images/generations', {
+
+    // QUALITY MUST BE SET. The spec's default is `auto`, which "will
+    // automatically select the best quality for the given model" — so leaving
+    // it out does not mean cheap, it means the model may choose `high` and
+    // bill nearly three times the estimate. An unspecified cost multiplier
+    // across thousands of images is not something to leave to a default.
+    const quality = process.env.OPENAI_IMAGE_QUALITY ?? 'medium';
+
+    const base = process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1';
+    const res = await fetch(`${base}/images/generations`, {
       method: 'POST',
       headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -79,14 +95,31 @@ const OPENAI: Provider = {
         prompt,
         n: 1,
         size: '1024x1024',
+        quality,
+        // Genuine alpha. The spec requires png or webp output alongside it,
+        // which is what makes a sprite able to sit on the settlement ground.
         background: 'transparent',
         output_format: 'png',
       }),
     });
     await expectOk(res, 'openai');
-    const json = await res.json() as { data?: { b64_json?: string }[] };
+
+    // `response_format` is not accepted for the GPT image models — they always
+    // return base64 — so b64_json is the only field to read.
+    const json = await res.json() as {
+      data?: { b64_json?: string }[];
+      quality?: string;
+      usage?: { total_tokens?: number };
+    };
     const b64 = json.data?.[0]?.b64_json;
     if (!b64) throw new Error('openai returned no image data');
+
+    // Report what was actually billed rather than what was asked for: the API
+    // echoes back the quality it used, and that is the number that costs money.
+    if (json.quality && json.quality !== quality) {
+      console.log(`\n        note: asked for ${quality}, served ${json.quality}`);
+    }
+    lastUsage = { quality: json.quality ?? quality, tokens: json.usage?.total_tokens };
     return Buffer.from(b64, 'base64');
   },
 };
@@ -436,7 +469,10 @@ export async function main(argv: string[]): Promise<void> {
       // interrupted run never leaves art that the ledger cannot account for.
       drawn[entry.id] = entry.briefHash;
       await writeFile(DRAWN, JSON.stringify(drawn, null, 2) + '\n', 'utf8');
-      console.log(`ok (${(png.length / 1024).toFixed(0)} kB) -> ${entry.path}`);
+      console.log(
+        `ok (${(png.length / 1024).toFixed(0)} kB) -> ${entry.path}` +
+        (lastUsage.quality ? `  [${lastUsage.quality}${lastUsage.tokens ? `, ${lastUsage.tokens} tokens` : ''}]` : ''),
+      );
 
       if (commit) {
         await rebuildLedger();
