@@ -14,6 +14,8 @@ sprites/research/<discipline key>.png            96x96
 ```
 
 - `pnpm run sprites <asset-id>` draws one through an image model (needs your API key).
+  PixelLab is the default: it takes `isometric` and `no_background` as real
+  parameters and renders at these exact sizes, so nothing is resampled or keyed.
 - `pnpm run brief <asset-id>` prints the full prompt for one asset.
 - `assets/BRIEF.md` carries the rules every sprite obeys.
 - `pnpm run assets` rebuilds the ledger from what is actually on disk.

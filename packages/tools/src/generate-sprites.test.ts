@@ -19,7 +19,7 @@ import { createServer, type Server } from 'node:http';
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PROVIDERS, promptFor } from './generate-sprites.js';
+import { PROVIDERS, promptFor, pixelLabDescription } from './generate-sprites.js';
 import { buildManifest } from './build-assets.js';
 
 /** A 1x1 transparent PNG — enough to prove the bytes were carried through. */
@@ -63,10 +63,12 @@ beforeEach(async () => {
   });
   await new Promise<void>((r) => server.listen(0, () => { port = (server.address() as { port: number }).port; r(); }));
   process.env.OPENAI_BASE_URL = `http://127.0.0.1:${port}/v1`;
+  process.env.PIXELLAB_BASE_URL = `http://127.0.0.1:${port}/v1`;
 });
 
 afterEach(async () => {
   delete process.env.OPENAI_BASE_URL;
+  delete process.env.PIXELLAB_BASE_URL;
   delete process.env.OPENAI_IMAGE_QUALITY;
   delete process.env.OPENAI_IMAGE_MODEL;
   await new Promise<void>((r) => server.close(() => r()));
@@ -177,5 +179,106 @@ describe('the prompt', () => {
       .map((e) => promptFor(e, openai()).length)
       .reduce((a, b) => Math.max(a, b), 0);
     expect(longest).toBeLessThan(32_000);
+  });
+});
+
+// ============================================================================
+// PixelLab — the one built for this problem
+// ============================================================================
+
+const pixellab = () => PROVIDERS.find((p) => p.name === 'pixellab')!;
+
+describe('the PixelLab request matches its published spec', () => {
+  beforeEach(() => {
+    // The shape from api.pixellab.ai/v1/openapi.json.
+    reply = {
+      status: 200,
+      body: { image: { type: 'base64', base64: PIXEL }, usage: { type: 'usd', usd: 0.0087 } },
+    };
+  });
+
+  it('hits the pixflux endpoint with a bearer token', async () => {
+    await pixellab().generate('unused', anEntry(), 'pl-test');
+    expect(captured[0]!.path).toBe('/v1/generate-image-pixflux');
+    expect(captured[0]!.auth).toBe('Bearer pl-test');
+  });
+
+  it('asks for isometric and a transparent background', async () => {
+    // These two are why this provider exists here: every general image model
+    // had to be argued into them and still baked in ground and shadow.
+    await pixellab().generate('unused', anEntry(), 'pl-test');
+    expect(captured[0]!.body['isometric']).toBe(true);
+    expect(captured[0]!.body['no_background']).toBe(true);
+  });
+
+  it('renders at the manifest size, so nothing is resampled', async () => {
+    const entry = anEntry();
+    await pixellab().generate('unused', entry, 'pl-test');
+    expect(captured[0]!.body['image_size']).toEqual({ width: entry.width, height: entry.height });
+  });
+
+  it('stays inside the endpoint\'s 16-400px bounds for every asset', () => {
+    // A size outside the range is a 422 from the API, and it would only show
+    // up on whichever asset kind was tried last.
+    for (const e of buildManifest()) {
+      expect(e.width).toBeGreaterThanOrEqual(16);
+      expect(e.width).toBeLessThanOrEqual(400);
+      expect(e.height).toBeGreaterThanOrEqual(16);
+      expect(e.height).toBeLessThanOrEqual(400);
+    }
+  });
+
+  it('sends one style triple for every sprite', async () => {
+    // A settlement is dozens of buildings side by side. Coherence between them
+    // matters more than the merit of any one, so the style must not vary.
+    const bodies: Record<string, unknown>[] = [];
+    for (const id of ['building/1_farm/t1', 'building/1_mine/t5', 'research/agrarian_arts']) {
+      const e = buildManifest().find((x) => x.id === id)!;
+      await pixellab().generate('unused', e, 'pl-test');
+      bodies.push(captured[captured.length - 1]!.body);
+    }
+    const style = (b: Record<string, unknown>) => [b['outline'], b['shading'], b['detail']].join('|');
+    expect(new Set(bodies.map(style)).size).toBe(1);
+    // And each value must be one the spec accepts.
+    expect(['single color black outline', 'single color outline', 'selective outline', 'lineless'])
+      .toContain(bodies[0]!['outline']);
+    expect(['flat shading', 'basic shading', 'medium shading', 'detailed shading', 'highly detailed shading'])
+      .toContain(bodies[0]!['shading']);
+    expect(['low detail', 'medium detail', 'highly detailed']).toContain(bodies[0]!['detail']);
+  });
+
+  it('seeds from the brief, so the same brief redraws the same sprite', async () => {
+    const entry = anEntry();
+    await pixellab().generate('unused', entry, 'pl-test');
+    const first = captured[0]!.body['seed'];
+    await pixellab().generate('unused', entry, 'pl-test');
+    expect(captured[1]!.body['seed']).toBe(first);
+    expect(typeof first).toBe('number');
+    expect(first as number).toBeGreaterThan(0);
+  });
+
+  it('describes the subject and its Signature, condensed for the resolution', () => {
+    // The full prose brief is written for a general model. At 256 pixels the
+    // detail it describes cannot survive, and a long prompt buries the subject.
+    const d = pixelLabDescription(anEntry());
+    expect(d).toMatch(/^Farm,/);
+    expect(d).toContain('ox-turned grain post');
+    expect(d).toContain('small, low, irregular');
+    expect(d.length).toBeLessThan(400);
+  });
+
+  it('decodes the image and records what the call actually cost', async () => {
+    const out = await pixellab().generate('unused', anEntry(), 'pl-test');
+    expect(out.equals(Buffer.from(PIXEL, 'base64'))).toBe(true);
+  });
+
+  it('throws on an error status rather than saving it as a sprite', async () => {
+    reply = { status: 401, body: { detail: 'Invalid API key' } };
+    await expect(pixellab().generate('x', anEntry(), 'bad')).rejects.toThrow(/401/);
+  });
+
+  it('throws when the response carries no image', async () => {
+    reply = { status: 200, body: { usage: { usd: 0 } } };
+    await expect(pixellab().generate('x', anEntry(), 'pl-test')).rejects.toThrow(/no image data/);
   });
 });

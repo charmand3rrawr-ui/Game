@@ -30,6 +30,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { buildManifest, composeBrief, statusOf, type AssetEntry } from './build-assets.js';
+import { VISUAL_TIERS } from '@ascendance/shared';
 import { main as rebuildLedger } from './build-assets.js';
 
 const ROOT = new URL('../../../', import.meta.url).pathname;
@@ -180,6 +181,107 @@ const REPLICATE: Provider = {
 };
 
 /**
+ * PixelLab — built for exactly this problem.
+ *
+ * Every general image model fought the brief: no alpha, inconsistent camera,
+ * ground and shadows baked in, output at the wrong size. This API takes
+ * `isometric` and `no_background` as first-class parameters, renders at the
+ * manifest's own dimensions (16-400px), and exposes outline, shading and
+ * detail as explicit style controls.
+ *
+ * That last part is what matters across 5,943 sprites. A settlement is dozens
+ * of buildings side by side, and coherence between them is more important than
+ * the quality of any one — a beautiful sprite in the wrong style is worse than
+ * a plain one in the right style. Sending the same style triple every time is
+ * what makes them look like one game rather than a collection.
+ *
+ * The output is pixel art. That is a deliberate change of house style from the
+ * procedural geometry, and a coherent one: pixel art holds up at the small
+ * sizes these are drawn, carries real alpha, and is what the tool is good at.
+ *
+ * Verified against api.pixellab.ai/v1/openapi.json, not from memory.
+ */
+const PIXELLAB: Provider = {
+  name: 'pixellab',
+  envVar: 'PIXELLAB_API_KEY',
+  hint: 'https://www.pixellab.ai — free tier, no credit card',
+  // `no_background` gives a genuinely transparent sprite, so there is nothing
+  // to key out and nothing to lose at the edges.
+  nativeTransparency: true,
+  async generate(prompt, entry, key) {
+    const base = process.env.PIXELLAB_BASE_URL ?? 'https://api.pixellab.ai/v1';
+    const res = await fetch(`${base}/generate-image-pixflux`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        description: pixelLabDescription(entry),
+        // Straight from the manifest: the API renders at the target size, so
+        // there is no resample between what the model drew and what ships.
+        image_size: { width: entry.width, height: entry.height },
+        isometric: true,
+        no_background: true,
+        // One style triple for the whole programme. Consistency between
+        // buildings matters more than the merit of any single one.
+        outline: 'single color black outline',
+        shading: 'medium shading',
+        detail: 'medium detail',
+        // Derived from the brief hash, so a re-run of the same brief returns
+        // the same sprite rather than a different one.
+        seed: parseInt(entry.briefHash.slice(0, 8), 16) % 2_147_483_647,
+        text_guidance_scale: 8,
+      }),
+    });
+    await expectOk(res, 'pixellab');
+    const json = await res.json() as {
+      image?: { base64?: string };
+      usage?: { usd?: number; generations?: number };
+    };
+    const b64 = json.image?.base64;
+    if (!b64) throw new Error('pixellab returned no image data');
+    // The API reports what the call actually cost, so spend is measured rather
+    // than estimated.
+    lastUsage = {
+      quality: json.usage?.usd !== undefined ? `$${json.usage.usd.toFixed(4)}` : undefined,
+    };
+    void prompt;
+    return Buffer.from(b64, 'base64');
+  },
+};
+
+/**
+ * The brief, condensed for a pixel-art model.
+ *
+ * The full prompt is written for a general image model and runs to a dozen
+ * lines of prose. A pixel-art generator working at 256 pixels does better with
+ * the subject stated plainly and the tier's silhouette instruction attached —
+ * the rest of the brief describes detail that cannot survive the resolution.
+ */
+export function pixelLabDescription(entry: AssetEntry): string {
+  const parts = [entry.subject];
+  if (entry.authoredAppearance) {
+    // The authored appearance up to its Signature, which is the one detail
+    // worth spending pixels on.
+    const [look, signature] = entry.authoredAppearance.split(/Signature:\s*/);
+    if (look) parts.push(look.trim().replace(/\.$/, ''));
+    if (signature) parts.push(signature.trim().replace(/\.$/, ''));
+  }
+  const tier = VISUAL_TIERS.find((t) => t.tier === entry.tier);
+  if (tier && tier.tier > 0) parts.push(tier.silhouette.toLowerCase());
+
+  // Units and research carry no authored appearance, so their category is the
+  // only real information available and dropping it left descriptions as thin
+  // as "Militia, era 1". A unit's ROLE is what its silhouette has to read as —
+  // the counter matrix is a rock-paper-scissors the player must see coming —
+  // and a discipline's branch is what makes its icon distinguishable.
+  if (!entry.authoredAppearance && entry.category) {
+    parts.push(entry.kind === 'unit' ? `${entry.category} soldier` : `${entry.category} icon`);
+  }
+  if (entry.purpose && entry.kind === 'research') parts.push(entry.purpose.slice(0, 80));
+  if (entry.era) parts.push(`era ${entry.era}`);
+  return parts.join(', ');
+}
+
+/**
  * Free, keyless, and preview-only.
  *
  * Tested September 2026: the images are genuinely good — a legible isometric
@@ -212,7 +314,7 @@ const POLLINATIONS: Provider = {
   },
 };
 
-export const PROVIDERS: Provider[] = [OPENAI, STABILITY, REPLICATE, POLLINATIONS];
+export const PROVIDERS: Provider[] = [PIXELLAB, OPENAI, STABILITY, REPLICATE, POLLINATIONS];
 
 // ============================================================================
 // Prompt
@@ -379,6 +481,9 @@ function commitOne(entry: AssetEntry): void {
  * the unit price does.
  */
 const PRICE_PER_IMAGE: Record<string, { label: string; usd: number }[]> = {
+  // PixelLab bills per generation and reports the exact figure back on every
+  // call, so this is only a planning number — the run tells you the real one.
+  pixellab: [{ label: 'pixflux generation', usd: 0.01 }],
   openai: [
     { label: 'low quality', usd: 0.02 },
     { label: 'medium quality', usd: 0.07 },
@@ -527,7 +632,10 @@ export async function main(argv: string[]): Promise<void> {
       // and estimating returns before this loop.
       const raw = await provider.generate(prompt, entry, key!);
       // A preview is looked at, not composited, so it is kept as returned.
-      const png = provider.previewOnly
+      // PixelLab renders at the manifest's own size with a real alpha
+      // channel, so there is nothing to resample and nothing to key — post-
+      // processing it would only lose pixels.
+      const png = provider.previewOnly || provider.name === 'pixellab'
         ? raw
         : await postProcess(raw, entry, !provider.nativeTransparency);
       await mkdir(dirname(file), { recursive: true });
