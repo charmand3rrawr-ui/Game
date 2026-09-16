@@ -18,7 +18,10 @@
     "dev:client": "pnpm --filter @ascendance/client run dev",
     "build:pages": "pnpm run import && pnpm --filter @ascendance/shared run build && pnpm --filter @ascendance/engine run build && pnpm --filter @ascendance/client run build",
     "smoke": "pnpm --filter @ascendance/client run smoke",
-    "ci": "pnpm run import && pnpm run build && pnpm run typecheck && pnpm run test"
+    "ci": "pnpm run import && pnpm run build && pnpm run typecheck && pnpm run test",
+    "assets": "pnpm --filter @ascendance/tools run assets",
+    "brief": "pnpm --filter @ascendance/tools run brief",
+    "verify:sprites": "pnpm --filter @ascendance/client run verify:sprites"
   },
   "devDependencies": {
     "typescript": "^5.7.3",

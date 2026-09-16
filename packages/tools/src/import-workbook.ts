@@ -194,6 +194,15 @@ interface RefVisualTier {
 }
 /** One of the seven overlay axes multiplied over every tier. */
 interface RefVisualOverlay { axis: string; key: string; states: string; renders: string; scope: string }
+/**
+ * A worked example: what ONE named building looks like at ONE tier.
+ *
+ * `Visual_Tiers` says what happens to every building at a tier in the
+ * abstract ("spreads horizontally; annexes appear"). These are six buildings
+ * carried through all twelve, in concrete terms, and they are what turns the
+ * abstract instruction into something an artist can draw.
+ */
+interface RefArtExemplar { building: string; tier: number; levelBand: string; appearance: string }
 interface RefGovernorSpec { sheet: string; key: string; defines: string; behaviour: string; failure: string }
 
 // ============================================================================
@@ -837,6 +846,7 @@ async function main(): Promise<void> {
   // draws what the art brief describes rather than something invented here.
   const visualTiers = readVisualTiers(wb.sheet('Visual_Tiers'), MAX_LEVEL);
   const visualOverlays = readVisualOverlays(wb.sheet('Visual_Overlays'));
+  const artExemplars = readArtExemplars(wb.sheet('ArtBrief_Exemplars'));
 
   // --------------------------------------------------------------- emission
   await mkdir(dirname(OUT_CONSTANTS), { recursive: true });
@@ -847,7 +857,7 @@ async function main(): Promise<void> {
     renderRefData(hash, {
       buildings, archetypes, unitGrades, unitPaths, counter, vetTiers, grades, holdings,
       research, equipment, celestial, chassis, shardDenoms, governorTiers, governorSpecs,
-      visualTiers, visualOverlays,
+      visualTiers, visualOverlays, artExemplars,
     }),
     'utf8',
   );
@@ -1745,6 +1755,55 @@ function renderConstants(C: ConstantSet, hash: string): string {
  * up as an invisible building at some particular level in some particular
  * settlement. So the bands are checked to run 0..1337 without a hole.
  */
+/**
+ * The worked art briefs, carried down the merged first column.
+ *
+ * The sheet names a building once and then leaves that cell blank for its
+ * remaining eleven tiers, the way a person writing a table would. So the last
+ * non-empty name carries forward — and the reader checks each building really
+ * does get twelve tiers, because a silently short block would mean an artist
+ * working from a brief with holes in it.
+ */
+function readArtExemplars(s: Sheet): RefArtExemplar[] {
+  const h = findHeaderRow(s, 'Building');
+  const idx = {
+    b: s.headerIndex(h, 'Building'),
+    t: s.headerIndex(h, 'Tier'),
+    l: s.headerIndex(h, 'Level band'),
+    a: s.headerIndex(h, 'Appearance at this tier'),
+  };
+  const out: RefArtExemplar[] = [];
+  let current = '';
+  // Spanning, not `dataRows`: the building is named once per block of twelve.
+  for (const r of s.dataRowsSpanning(h)) {
+    const named = String(r[idx.b] ?? '').trim();
+    if (named) current = named;
+    const rawTier = String(r[idx.t] ?? '').trim();
+    const appearance = String(r[idx.a] ?? '').trim();
+    if (!current || rawTier === '' || !appearance) continue;
+    const tier = Number(rawTier);
+    if (!Number.isInteger(tier)) continue;
+    out.push({ building: current, tier, levelBand: String(r[idx.l] ?? '').trim(), appearance });
+  }
+  if (out.length === 0) throw new ImportError('ArtBrief_Exemplars: no worked examples found');
+
+  const byBuilding = new Map<string, number[]>();
+  for (const e of out) {
+    const tiers = byBuilding.get(e.building) ?? [];
+    tiers.push(e.tier);
+    byBuilding.set(e.building, tiers);
+  }
+  for (const [building, tiers] of byBuilding) {
+    if (tiers.length !== 12) {
+      throw new ImportError(
+        `ArtBrief_Exemplars: ${building} has ${tiers.length} tiers, not 12 — an exemplar with holes in it ` +
+        'is worse than none, because the gaps are invisible to whoever draws from it',
+      );
+    }
+  }
+  return out;
+}
+
 function readVisualTiers(s: Sheet, maxLevel: number): RefVisualTier[] {
   const h = findHeaderRow(s, 'Tier');
   const idx = {
@@ -1894,6 +1953,8 @@ interface RefTrial {
   lines.push(`export interface RefVisualTier { tier: number; minLevel: number; maxLevel: number; minGrade: number; maxGrade: number; transformation: string; silhouette: string; read: string }`);
   lines.push(`/** One of the seven overlay axes multiplied over every tier. */`);
   lines.push(`export interface RefVisualOverlay { axis: string; key: string; states: string; renders: string; scope: string }`);
+  lines.push(`/** A worked example: what one named building looks like at one tier. */`);
+  lines.push(`export interface RefArtExemplar { building: string; tier: number; levelBand: string; appearance: string }`);
   lines.push(`export interface RefGovernorSpec { sheet: string; key: string; defines: string; behaviour: string; failure: string }`);
   lines.push('');
   lines.push('/** role name -> index into COUNTER_MATRIX rows/columns. */');
@@ -1918,6 +1979,7 @@ interface RefTrial {
     ['GOVERNOR_SPECS', 'RefGovernorSpec'],
     ['VISUAL_TIERS', 'RefVisualTier'],
     ['VISUAL_OVERLAYS', 'RefVisualOverlay'],
+    ['ART_EXEMPLARS', 'RefArtExemplar'],
   ] as const) {
     const keyMap: Record<string, string> = {
       BUILDINGS: 'buildings',
@@ -1936,6 +1998,7 @@ interface RefTrial {
       GOVERNOR_SPECS: 'governorSpecs',
       VISUAL_TIERS: 'visualTiers',
       VISUAL_OVERLAYS: 'visualOverlays',
+      ART_EXEMPLARS: 'artExemplars',
     };
     lines.push(`export const ${name}: readonly ${type}[] = ${json(d[keyMap[name]!])};`);
     lines.push('');

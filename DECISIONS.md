@@ -264,3 +264,48 @@ since the last sample, which hands the dodge straight back. Four tests cover it,
 including that conquest is not instantly taxed either — the delay cuts both
 ways — and that the average is a function of elapsed time rather than of how
 many steps the world was advanced in.
+
+## D11 — The art programme is a work order, not a generated asset
+
+`Visual_Tiers`, `Visual_Overlays`, `ArtBrief_Exemplars` and every building's own
+`art` column describe a real art programme: 483 buildings across twelve tiers,
+127 unit archetypes and 24 research icons, each with a written appearance and
+often a named "Signature" element. None of that can be produced by writing code,
+and no image-generation capability exists in this toolchain.
+
+**Decision.** Build everything around the art instead, so that it can land one
+file at a time over months without a migration or a broken build:
+
+- `assets/manifest.jsonl` — all 5,943 assets, each with its path, dimensions and
+  the fields unique to it. `pnpm run brief <id>` composes the full prompt from
+  the workbook on demand; `assets/BRIEF.md` carries the rules that apply to
+  every sprite. Nothing in a brief is invented here — this only arranges what
+  the workbook already says.
+- `sprites.ts` — asks for a sprite, returns one if it has been drawn and nothing
+  if it has not, never blocking a frame and never treating a 404 as an error.
+  A miss is the normal case 5,943 times over, so misses are remembered; without
+  that, a full settlement re-requests every undrawn sprite every frame.
+- The overlays are drawn by one shared function on both paths. If an authored
+  building lost its damage state or its Overdriven shimmer, art landing would
+  quietly remove information the player acts on, one building at a time — the
+  hardest kind of regression to notice.
+
+**The ledger derives its status from the filesystem.** An asset is integrated
+when the file exists where the loader looks, because that is when the renderer
+uses it. A ledger somebody has to remember to tick is wrong within a week, and
+both failure modes cost real work: drawing something twice because the log said
+it was missing, or shipping a hole because the log said it was done. Each entry
+also records the hash of the brief it was drawn against, so a brief revised
+after the fact marks the art **stale** rather than done.
+
+**No placeholder art is committed.** A stand-in is indistinguishable from
+finished work once it is in the repository, and it would make the ledger claim
+an asset was done when nobody had drawn it. The pipeline is proved instead by
+`pnpm run verify:sprites`, which generates a marker sprite, confirms its pixels
+reach the canvas, and removes it again.
+
+That test also corrected itself: its first version decoded the screenshot PNG by
+hand without reversing the per-row filters, so every reading was noise that
+happened to look plausible — it reported a sprite as drawn before one existed.
+It now reads the canvas's own pixels, which measures the thing in question
+rather than a re-encoding of it.

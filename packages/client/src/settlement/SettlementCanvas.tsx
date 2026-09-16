@@ -39,6 +39,7 @@ import {
   activityState, auraFor, damageState, paletteFor, seedOf, silhouetteFor, tierForLevel,
   type BuildingVisual,
 } from './visual.js';
+import { buildingSpritePath, sprite } from './sprites.js';
 
 export interface Plot {
   /** First cell of the footprint. */
@@ -451,6 +452,30 @@ function drawBuilding(
     ctx.fill();
   }
 
+  /*
+   * AUTHORED ART TAKES OVER IF IT EXISTS.
+   *
+   * Drawn per tier, so this asks for the tier the level falls in. A miss costs
+   * nothing and returns immediately — the geometry below runs instead, and the
+   * frame after the file arrives the building is simply drawn. That is what
+   * lets 5,943 sprites land one at a time over months without a flag, a
+   * migration, or a broken settlement in between.
+   *
+   * The overlays are NOT part of the sprite. Damage, Overdriven, idle and the
+   * aura are composited afterwards either way, so an authored building carries
+   * exactly the same gameplay information as a generated one.
+   */
+  const art = sprite(buildingSpritePath(b.key, sil.tier));
+  if (art) {
+    const drawW = w * 1.35;
+    const drawH = drawW * (art.naturalHeight / Math.max(1, art.naturalWidth));
+    ctx.globalAlpha = sil.solidity;
+    ctx.drawImage(art, cx - drawW / 2, cy + hh * 0.2 - drawH, drawW, drawH);
+    ctx.globalAlpha = 1;
+    drawOverlays(ctx, cx, cy, scale, drawW, drawH, b, frame, emphasised, jitter);
+    return;
+  }
+
   // --- tier 0: a cleared site, not a building ------------------------------
   if (sil.tier === 0) {
     ctx.strokeStyle = 'rgba(255,255,255,0.4)';
@@ -540,9 +565,27 @@ function drawBuilding(
   }
   ctx.globalAlpha = 1;
 
-  // ==========================================================================
-  // The two overlays that carry gameplay. Drawn LAST so nothing hides them.
-  // ==========================================================================
+  // The overlays. Shared with the authored-art path above, so a drawn building
+  // carries exactly the same gameplay information as a generated one.
+  drawOverlays(ctx, cx, cy, scale, w, h, b, frame, emphasised, jitter);
+}
+
+/**
+ * The overlays that carry gameplay, drawn over whatever produced the building.
+ *
+ * Extracted so the authored-sprite path and the procedural path cannot drift.
+ * If a drawn building lost its damage state or its Overdriven shimmer, art
+ * landing would quietly remove information the player acts on — and it would
+ * do so one building at a time, which is the hardest kind of regression to
+ * notice. `spec/06 §4` requires both stay legible at a glance; that is a
+ * property of the GAME, not of one renderer branch.
+ */
+function drawOverlays(
+  ctx: CanvasRenderingContext2D, cx: number, cy: number, scale: number,
+  w: number, h: number, b: BuildingVisual, frame: number, emphasised: boolean, jitter: number,
+): void {
+  const dmg = damageState(b.damage);
+  const act = activityState(b);
 
   // --- damage: persists visibly until repaired ------------------------------
   if (dmg !== 'pristine') {
@@ -592,9 +635,10 @@ function drawBuilding(
 
   // --- idle: the lights are off ---------------------------------------------
   if (act === 'idle') {
-    // A flat wash over the same volume — `flat` skips the face shading and the
-    // outlines, so this darkens the building rather than redrawing it.
-    box(ctx, cx, cy, w, h, { wall: 'rgba(8,10,14,0.38)', roof: 'rgba(8,10,14,0.38)', line: 'transparent', glow: '' }, 0, jitter, true);
+    // A flat wash over the footprint. Drawn as a rectangle rather than a volume
+    // so it darkens an authored sprite as readily as a generated one.
+    ctx.fillStyle = 'rgba(8,10,14,0.38)';
+    ctx.fillRect(cx - w / 2, cy - h, w, h);
   }
 
   // --- selection ring -------------------------------------------------------

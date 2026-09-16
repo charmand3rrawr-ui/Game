@@ -6,10 +6,13 @@
   "scripts": {
     "import": "tsx src/import-workbook.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "echo \"(tools: covered by the importer's own assertions)\""
+    "test": "echo \"(tools: covered by the importer's own assertions)\"",
+    "assets": "tsx src/build-assets.ts",
+    "brief": "tsx src/brief.ts"
   },
   "dependencies": {
-    "exceljs": "^4.4.0"
+    "exceljs": "^4.4.0",
+    "@ascendance/shared": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.7.3",

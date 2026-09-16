@@ -10,7 +10,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "smoke": "node smoke.mjs",
-    "smoke:build": "ASCENDANCE_LOCAL=1 vite build && node smoke.mjs"
+    "smoke:build": "ASCENDANCE_LOCAL=1 vite build && node smoke.mjs",
+    "verify:sprites": "node verify-sprite-pipeline.mjs"
   },
   "dependencies": {
     "@ascendance/shared": "workspace:*",

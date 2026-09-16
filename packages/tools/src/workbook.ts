@@ -93,8 +93,36 @@ export class Sheet {
   }
 
   /** Every data row below `headerRow` that has something in column 0. */
+  /**
+   * Rows below the header, stopping where the first column runs out.
+   *
+   * A blank first column ends the table in most of this workbook, so this is
+   * the right default — but NOT for a sheet whose first column is merged or
+   * carried forward down a block, where it would silently drop every row but
+   * the first of each group. Those sheets want `dataRowsSpanning`.
+   */
   dataRows(headerRow: number): Cell[][] {
     return this.rows.slice(headerRow + 1).filter((r) => r[0] !== null && r[0] !== '');
+  }
+
+  /**
+   * Rows below the header, keeping ones whose first column is blank.
+   *
+   * For tables written the way a person writes them: the group is named once
+   * and the remaining rows leave that cell empty. Stops at the first entirely
+   * blank row, which is what actually ends such a table.
+   *
+   * This exists because `dataRows` quietly discarded eleven of every twelve
+   * rows of `ArtBrief_Exemplars` — the failure was invisible until a reader
+   * counted what it got and refused the short result.
+   */
+  dataRowsSpanning(headerRow: number): Cell[][] {
+    const out: Cell[][] = [];
+    for (const r of this.rows.slice(headerRow + 1)) {
+      if (r.every((c) => c === null || c === '')) break;
+      out.push(r);
+    }
+    return out;
   }
 }
 
