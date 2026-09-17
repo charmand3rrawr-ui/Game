@@ -17,10 +17,10 @@ Until a sprite exists, the renderer draws that building procedurally from `Visua
 
 | Kind | Integrated | Total |
 |---|---:|---:|
-| building | 1 | 5796 |
+| building | 2 | 5796 |
 | research | 0 | 21 |
 | unit | 0 | 126 |
-| **all** | **1** | **5943** |
+| **all** | **2** | **5943** |
 
 ## Drawing them with an image model
 
@@ -52,3 +52,4 @@ over ten need `--yes`, because every image is billed.
 ## Integrated
 
 - `building/1_chieftain_s_hall/t0` — Chieftain's Hall (tier 0)
+- `building/1_chieftain_s_hall/t1` — Chieftain's Hall (tier 1)
