@@ -7,3 +7,5 @@ coverage/
 .env.local
 packages/client/smoke-output/
 assets/previews/
+# The loose baked sprites; the archive beside them is what is kept.
+assets/procedural/

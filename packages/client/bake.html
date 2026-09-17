@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>sprite bake</title>
+<canvas id="c"></canvas>
+<script type="module">
+  import { drawBuildingFor, visualHeightAt } from './src/settlement/SettlementCanvas.js';
+  // Exposed for the baker: renders one building and hands back a PNG.
+  window.__bake = (spec) => {
+    const c = document.getElementById('c');
+    c.width = spec.width; c.height = spec.height;
+    const ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, c.width, c.height);
+    // Fit the tier's full height, spire and floating elements included.
+    const need = visualHeightAt(spec.level, spec.key);
+    const scale = Math.min(1.1, (c.height * 0.82) / Math.max(1, need));
+    drawBuildingFor(ctx, {
+      x: c.width / 2, y: c.height * 0.90, scale,
+      building: {
+        id: spec.id, key: spec.key, name: spec.name, category: spec.category,
+        level: spec.level, damage: 0, staffedPct: 100, era: spec.era,
+      },
+      grade: 1, maxGrade: 42, frame: 0, emphasised: false, span: 1,
+    });
+    return c.toDataURL('image/png');
+  };
+  window.__ready = true;
+</script>

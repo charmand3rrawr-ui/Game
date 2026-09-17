@@ -1,3 +1,4 @@
+/// <reference lib="dom" />
 /**
  * generate-sprites.ts — draw the art programme through an image model
  *
@@ -27,7 +28,7 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { buildManifest, composeBrief, statusOf, type AssetEntry } from './build-assets.js';
 import { VISUAL_TIERS } from '@ascendance/shared';
@@ -61,6 +62,10 @@ export interface Provider {
   hint: string;
   /** True if the model renders real alpha rather than a painted background. */
   nativeTransparency: boolean;
+  /** Minimum gap between calls, where the provider publishes one. */
+  minIntervalMs?: number;
+  /** True when the service takes no credentials at all. */
+  keyless?: boolean;
   generate(prompt: string, entry: AssetEntry, key: string): Promise<Buffer>;
 }
 
@@ -371,19 +376,53 @@ const POLLINATIONS: Provider = {
   name: 'pollinations',
   envVar: 'POLLINATIONS_TOKEN',
   hint: 'no key needed — this one is free and keyless',
+  keyless: true,
   nativeTransparency: false,
-  previewOnly: true,
-  previewReason:
-    'returns watermarked JPEG with baked-in ground and shadow, so it cannot produce a usable sprite',
+  /**
+   * One request every 15 seconds for anonymous callers, per their own docs.
+   *
+   * Exceeding a published limit on a service that charges nothing is how the
+   * free tier stops being free for everyone, so the pacing is built in rather
+   * than left to whoever runs the command.
+   */
+  minIntervalMs: 15_000,
   async generate(prompt, entry, _key) {
+    // Square and modest: the output is downscaled to the manifest size anyway,
+    // and a smaller request returns faster against a shared free queue.
     const url =
-      `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.slice(0, 1800))}` +
-      `?width=1024&height=1024&model=flux&nologo=true&seed=${parseInt(entry.briefHash.slice(0, 6), 16)}`;
+      `https://image.pollinations.ai/prompt/${encodeURIComponent(pollinationsPrompt(entry).slice(0, 1200))}` +
+      `?width=512&height=512&nologo=true&seed=${parseInt(entry.briefHash.slice(0, 6), 16) % 2_147_483_647}`;
     const res = await fetch(url);
     await expectOk(res, 'pollinations');
+    void prompt;
     return Buffer.from(await res.arrayBuffer());
   },
 };
+
+/**
+ * The description, aimed at what this model actually responds to.
+ *
+ * Tested against it directly: long prose briefs drifted off the camera angle
+ * and it ignored instructions phrased as prohibitions — "no ground" reliably
+ * produced ground. Leading with the medium and the framing, and keeping the
+ * subject short, held the isometric view far more often.
+ *
+ * The flat background is asked for positively rather than as a prohibition,
+ * because that is the one the post-processing depends on: a plain backdrop can
+ * be keyed out, a scenic one cannot.
+ */
+export function pollinationsPrompt(entry: AssetEntry): string {
+  return [
+    // Isolation first, phrased as what the frame CONTAINS rather than what it
+    // must not. Tested against this model directly: "no ground" reliably
+    // produced ground, while "floating in an empty void, product shot" gave a
+    // centred isolated object. It responds to framing, not to prohibitions.
+    'a single isolated game asset of',
+    pixelLabDescription(entry) + ',',
+    'isometric view, floating in an empty void, product shot on a plain flat white backdrop,',
+    'one object only, centred, generous empty margin on all sides',
+  ].join(' ');
+}
 
 export const PROVIDERS: Provider[] = [PIXELLAB, PIXLER, OPENAI, STABILITY, REPLICATE, POLLINATIONS];
 
@@ -439,9 +478,27 @@ export function promptFor(entry: AssetEntry, provider: Provider): string {
  * already a dependency here for the smoke tests, and pulling in a native image
  * toolchain for a resize is not worth the build cost.
  */
+/**
+ * A chromium already on disk, whatever build number it carries.
+ *
+ * Playwright pins an exact build and refuses anything else, which turns a
+ * perfectly good preinstalled browser into a hard failure telling you to
+ * download one. Returns undefined when there is nothing to find, so Playwright
+ * falls back to its own resolution and its own error message.
+ */
+function localChromium(): string | undefined {
+  const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  if (!root || !existsSync(root)) return undefined;
+  for (const dir of readdirSync(root)) {
+    const candidate = join(root, dir, 'chrome-linux/chrome');
+    if (dir.startsWith('chromium') && existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+
 async function postProcess(raw: Buffer, entry: AssetEntry, keyOut: boolean): Promise<Buffer> {
   const { chromium } = await import('playwright');
-  const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
+  const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH ?? localChromium() });
   try {
     const page = await browser.newPage();
     /*
@@ -453,35 +510,85 @@ async function postProcess(raw: Buffer, entry: AssetEntry, keyOut: boolean): Pro
      * a convenience. Sending it across as a string keeps that boundary
      * visible instead of papering over it by adding `dom` to the whole
      * package's lib.
+     *
+     * The keying is a FLOOD FILL FROM THE EDGES, not a colour match over the
+     * whole image. A building drawn against a pale sky shares colours with
+     * that sky — thatch, stone and whitewash all sit close to it — and keying
+     * by colour punched holes through the middle of the roof. Filling inward
+     * from the border only removes background that is actually connected to
+     * the border, so an enclosed pale region stays part of the sprite.
      */
-    const out = await page.evaluate<string, { b64: string; width: number; height: number; keyOut: boolean }>(
-      `async ({ b64, width, height, keyOut }) => {
-        const img = new Image();
-        await new Promise((resolve, reject) => {
-          img.onload = resolve;
-          img.onerror = reject;
-          img.src = 'data:image/png;base64,' + b64;
-        });
-        const c = document.createElement('canvas');
-        c.width = width;
-        c.height = height;
-        const ctx = c.getContext('2d');
-        ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(img, 0, 0, width, height);
-        if (keyOut) {
-          const data = ctx.getImageData(0, 0, width, height);
-          const p = data.data;
-          for (let i = 0; i + 3 < p.length; i += 4) {
-            // Generous bounds: a model paints "magenta", not exactly #FF00FF,
-            // and resampling spreads it further at the edges.
-            if (p[i] > 170 && p[i + 2] > 170 && p[i + 1] < 110) p[i + 3] = 0;
-          }
-          ctx.putImageData(data, 0, 0);
+    const out = await page.evaluate(async (
+      { b64, width, height, keyOut }: { b64: string; width: number; height: number; keyOut: boolean },
+    ) => {
+      const img = new Image();
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = 'data:image/png;base64,' + b64;
+      });
+
+      // Work at the source resolution so the flood fill follows the real
+      // edges, then scale once at the end.
+      const full = document.createElement('canvas');
+      full.width = img.naturalWidth;
+      full.height = img.naturalHeight;
+      const fctx = full.getContext('2d')!;
+      fctx.drawImage(img, 0, 0);
+
+      if (keyOut) {
+        const W = full.width;
+        const H = full.height;
+        const data = fctx.getImageData(0, 0, W, H);
+        const p = data.data;
+
+        // The backdrop colour is whatever dominates the border. Counting in
+        // 5-bit buckets absorbs the JPEG noise that makes no two "white"
+        // pixels identical.
+        const counts = new Map<number, number>();
+        const edge: number[] = [];
+        for (let x = 0; x < W; x++) { edge.push(x, 0, x, H - 1); }
+        for (let y = 0; y < H; y++) { edge.push(0, y, W - 1, y); }
+        for (let e = 0; e < edge.length; e += 2) {
+          const i = (edge[e + 1]! * W + edge[e]!) * 4;
+          const k = ((p[i]! >> 3) << 10) | ((p[i + 1]! >> 3) << 5) | (p[i + 2]! >> 3);
+          counts.set(k, (counts.get(k) ?? 0) + 1);
         }
-        return c.toDataURL('image/png');
-      }` as unknown as (a: { b64: string; width: number; height: number; keyOut: boolean }) => string,
-      { b64: raw.toString('base64'), width: entry.width, height: entry.height, keyOut },
-    );
+        let bestKey = 0;
+        let bestN = -1;
+        for (const [k, n] of counts) { if (n > bestN) { bestN = n; bestKey = k; } }
+        const br = ((bestKey >> 10) & 31) << 3;
+        const bg = ((bestKey >> 5) & 31) << 3;
+        const bb = (bestKey & 31) << 3;
+
+        // Tolerance has to absorb JPEG ringing around the subject without
+        // eating into it.
+        const TOL = 42;
+        const stack: number[] = edge.slice();
+        const seen = new Uint8Array(W * H);
+        while (stack.length > 0) {
+          const y = stack.pop()!;
+          const x = stack.pop()!;
+          if (x < 0 || y < 0 || x >= W || y >= H) continue;
+          const sIdx = y * W + x;
+          if (seen[sIdx]) continue;
+          const i = sIdx * 4;
+          if (Math.abs(p[i]! - br) >= TOL || Math.abs(p[i + 1]! - bg) >= TOL || Math.abs(p[i + 2]! - bb) >= TOL) continue;
+          seen[sIdx] = 1;
+          p[i + 3] = 0;
+          stack.push(x + 1, y, x - 1, y, x, y + 1, x, y - 1);
+        }
+        fctx.putImageData(data, 0, 0);
+      }
+
+      const c = document.createElement('canvas');
+      c.width = width;
+      c.height = height;
+      const ctx = c.getContext('2d')!;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(full, 0, 0, width, height);
+      return c.toDataURL('image/png');
+    }, { b64: raw.toString('base64'), width: entry.width, height: entry.height, keyOut });
     return Buffer.from(out.split(',')[1]!, 'base64');
   } finally {
     await browser.close();
@@ -633,7 +740,7 @@ export async function main(argv: string[]): Promise<void> {
   const estimating = argv.includes('--estimate');
 
   const key = process.env[provider.envVar];
-  if (!key && !estimating && !provider.previewOnly) {
+  if (!key && !estimating && !provider.previewOnly && !provider.keyless) {
     console.error(
       `No API key. ${provider.name} needs ${provider.envVar}.\n\n` +
       `  export ${provider.envVar}=...   # ${provider.hint}\n\n` +
@@ -688,6 +795,7 @@ export async function main(argv: string[]): Promise<void> {
   );
 
   let drawnThisRun = 0;
+  let lastCallAt = 0;
   if (provider.previewOnly) {
     console.log(
       `${provider.name} is PREVIEW ONLY — it ${provider.previewReason}.\n` +
@@ -718,7 +826,13 @@ export async function main(argv: string[]): Promise<void> {
     if (everyMinutes > 0 && drawnThisRun > 0) {
       console.log(`  wait  ${everyMinutes} min before the next`);
       await new Promise((r) => setTimeout(r, everyMinutes * 60_000));
+    } else if (provider.minIntervalMs && drawnThisRun > 0) {
+      // The provider's own published limit. Exceeding it on a service that
+      // charges nothing is how a free tier stops being free for everyone.
+      const wait = provider.minIntervalMs - (Date.now() - lastCallAt);
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     }
+    lastCallAt = Date.now();
     drawnThisRun++;
     process.stdout.write(`  draw  ${entry.id} … `);
     try {
