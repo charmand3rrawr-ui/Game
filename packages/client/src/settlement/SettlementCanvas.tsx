@@ -36,7 +36,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  activityState, auraFor, damageState, paletteFor, seedOf, silhouetteFor, tierForLevel,
+  activityState, auraFor, damageState, facesFor, paletteFor, seedOf, shiftHsl,
+  silhouetteFor, tierForLevel,
   type BuildingVisual,
 } from './visual.js';
 import { buildingSpritePath, sprite } from './sprites.js';
@@ -216,9 +217,22 @@ export function SettlementCanvas({
     // Sky and ground wash, so the settlement sits somewhere rather than
     // floating on the page background.
     const sky = ctx.createLinearGradient(0, 0, 0, height);
-    sky.addColorStop(0, ground.sky);
+    sky.addColorStop(0, ground.far);
+    sky.addColorStop(0.55, ground.sky);
     sky.addColorStop(1, ground.far);
     ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, width, height);
+
+    // A warm glow behind the settlement, so the scene has a light source
+    // rather than an evenly lit backdrop. Cheap, and it is most of what makes
+    // a flat canvas feel like somewhere.
+    const key = ctx.createRadialGradient(
+      width * 0.68, height * 0.28, 0,
+      width * 0.68, height * 0.28, Math.max(width, height) * 0.75,
+    );
+    key.addColorStop(0, 'rgba(255, 214, 150, 0.22)');
+    key.addColorStop(1, 'rgba(255, 214, 150, 0)');
+    ctx.fillStyle = key;
     ctx.fillRect(0, 0, width, height);
 
     // Painter's algorithm: back rows first, so buildings in front overlap the
@@ -456,12 +470,16 @@ interface Ground { sky: string; far: string; top: string; side: string; empty: s
 
 /** "Desert, temperate, tundra, tropical, volcanic, void" — Visual_Overlays. */
 const BIOME: Record<string, Ground> = {
-  temperate: { sky: '#1b2230', far: '#141a25', top: '#3f5136', side: '#2c3a26', empty: '#26302a', line: '#55684a' },
-  desert:    { sky: '#2a2519', far: '#1d1a12', top: '#6b5a36', side: '#4e4227', empty: '#3a3120', line: '#8a7346' },
-  tundra:    { sky: '#1d2430', far: '#161c26', top: '#4e5a66', side: '#39434d', empty: '#2e3640', line: '#6b7a88' },
-  tropical:  { sky: '#16241d', far: '#101a15', top: '#2f5a3a', side: '#22422b', empty: '#1e3325', line: '#467a52' },
-  volcanic:  { sky: '#2a1a18', far: '#1c1110', top: '#4a2f2a', side: '#37211e', empty: '#2b1c19', line: '#7a4438' },
-  void:      { sky: '#15131f', far: '#0d0c14', top: '#2c2740', side: '#201c30', empty: '#1a1726', line: '#4a4170' },
+  // Saturated, warm-lit ground with a cool sky above it. The old set was near
+  // grey and made every building look like it was standing on asphalt; a
+  // stylised scene wants the ground to carry colour too, or the buildings are
+  // the only thing alive in the frame.
+  temperate: { sky: '#2e4a6b', far: '#1b2d44', top: '#6aa84f', side: '#3f6b32', empty: '#4a7a3c', line: '#8fd06a' },
+  desert:    { sky: '#5b4a2e', far: '#35291a', top: '#d9b063', side: '#a67c3c', empty: '#c09a52', line: '#f0d28a' },
+  tundra:    { sky: '#3a5570', far: '#22354a', top: '#8fb8d6', side: '#5d86a6', empty: '#7aa6c4', line: '#c3e3f7' },
+  tropical:  { sky: '#1f5548', far: '#123329', top: '#3fa860', side: '#26743f', empty: '#359451', line: '#6fe08c' },
+  volcanic:  { sky: '#5c2a22', far: '#331410', top: '#a04a33', side: '#6f2f20', empty: '#8a3d2a', line: '#ff8a5c' },
+  void:      { sky: '#2a2352', far: '#150f30', top: '#4a3f8c', side: '#312a63', empty: '#3d3576', line: '#9b8bff' },
 };
 
 /** One iso plot: the ground it stands on, and whether it is free. */
@@ -478,7 +496,12 @@ function drawTile(
   ctx.lineTo(cx, cy + hh);
   ctx.lineTo(cx - hw, cy);
   ctx.closePath();
-  ctx.fillStyle = empty ? g.empty : g.top;
+  // A short gradient across the tile so the ground plane reads as lit from the
+  // same direction as the buildings, rather than as flat colour.
+  const grad = ctx.createLinearGradient(cx, cy - hh, cx, cy + hh);
+  grad.addColorStop(0, empty ? g.empty : g.top);
+  grad.addColorStop(1, g.side);
+  ctx.fillStyle = grad;
   ctx.fill();
 
   // An empty plot is drawn as a dashed outline — an invitation, and a visible
@@ -833,40 +856,74 @@ function box(
   const tB = { x: bB.x, y: bB.y - h };
   const tR = { x: bR.x, y: bR.y - h };
 
-  const poly = (pts: { x: number; y: number }[], fill: string): void => {
+  const f = facesFor(pal.wall);
+
+  const poly = (pts: { x: number; y: number }[], fill: string | CanvasGradient): void => {
     ctx.beginPath();
     ctx.moveTo(pts[0]!.x, pts[0]!.y);
     for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i]!.x, pts[i]!.y);
     ctx.closePath();
     ctx.fillStyle = fill;
     ctx.fill();
-    if (pal.line !== 'transparent' && !flat) {
-      ctx.strokeStyle = pal.line;
-      ctx.lineWidth = 0.8;
-      ctx.stroke();
-    }
   };
 
-  // Left face in shadow, right face lit — one consistent light direction, so
-  // the whole settlement reads as one scene.
-  // A wide spread between the two side faces. At -18/+6 the volumes read as
-  // flat cards; pushing the shadow side down and the lit side up is what gives
-  // a stylised game look its solidity at small sizes.
-  poly([bL, bB, tB, tL], flat ? pal.wall : shade(pal.wall, -26));
-  poly([bB, bR, tR, tB], flat ? pal.wall : shade(pal.wall, 10));
-  poly([tL, tT, tR, tB], flat ? pal.wall : pal.roof);
-}
+  if (flat) {
+    // A flat wash (the idle darkening, or the pick buffer) wants one colour
+    // and no lighting at all.
+    poly([bL, bB, tB, tL], pal.wall);
+    poly([bB, bR, tR, tB], pal.wall);
+    poly([tL, tT, tR, tB], pal.wall);
+    return;
+  }
 
-/**
- * Nudge an `hsl(h s% l%)` colour lighter or darker.
- *
- * The palette is generated as HSL strings precisely so the renderer can do
- * this without a colour library: face shading is a lightness delta on the same
- * hue, which keeps a building one material rather than three.
- */
-function shade(hsl: string, delta: number): string {
-  const m = /hsl\((\d+(?:\.\d+)?) (\d+(?:\.\d+)?)% (\d+(?:\.\d+)?)%\)/.exec(hsl);
-  if (!m) return hsl;
-  const l = Math.max(4, Math.min(96, Number(m[3]) + delta));
-  return `hsl(${m[1]} ${m[2]}% ${l}%)`;
+  /*
+   * Each face carries a gradient, not a flat fill.
+   *
+   * A flat fill is what makes stylised geometry read as a diagram: real
+   * surfaces fall off toward the ground because less bounced light reaches
+   * them. The ramps here are short — a few points of lightness — but they are
+   * the difference between a painted volume and a coloured polygon.
+   */
+  const vertical = (x0: number, y0: number, y1: number, top: string, bottom: string): CanvasGradient => {
+    const g = ctx.createLinearGradient(x0, y0, x0, y1);
+    g.addColorStop(0, top);
+    g.addColorStop(1, bottom);
+    return g;
+  };
+
+  // Shadow side, cool and saturated — never a grey version of the wall.
+  poly([bL, bB, tB, tL], vertical(cx, tL.y, bB.y, f.shadow, shiftHsl(f.shadow, 6, 4, -8)));
+  // Lit side, warm.
+  poly([bB, bR, tR, tB], vertical(cx, tR.y, bR.y, f.lit, shiftHsl(f.lit, 8, 2, -12)));
+  // Roof, catching the key light.
+  poly([tL, tT, tR, tB], vertical(cx, tT.y, tB.y, f.top, shiftHsl(f.top, 4, 0, -7)));
+
+  /*
+   * The rim: a bright wrap along the top-lit edges.
+   *
+   * At sprite size this does more work than any interior detail, because it is
+   * what separates a building from whatever is drawn behind it. Drawn only on
+   * the two edges facing the key light, so it reads as light rather than as an
+   * outline.
+   */
+  ctx.strokeStyle = f.rim;
+  ctx.lineWidth = Math.max(1, w * 0.035);
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(tL.x, tL.y);
+  ctx.lineTo(tT.x, tT.y);
+  ctx.lineTo(tR.x, tR.y);
+  ctx.stroke();
+
+  // A darker line only where the form turns away, so the silhouette holds
+  // without the whole building looking outlined.
+  if (pal.line !== 'transparent') {
+    ctx.strokeStyle = f.occlusion;
+    ctx.lineWidth = Math.max(0.8, w * 0.016);
+    ctx.beginPath();
+    ctx.moveTo(bL.x, bL.y);
+    ctx.lineTo(bB.x, bB.y);
+    ctx.lineTo(bR.x, bR.y);
+    ctx.stroke();
+  }
 }

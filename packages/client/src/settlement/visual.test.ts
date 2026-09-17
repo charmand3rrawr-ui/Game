@@ -9,8 +9,9 @@
 import { describe, it, expect } from 'vitest';
 import { VISUAL_TIERS, VISUAL_OVERLAYS, C } from '@ascendance/shared';
 import {
-  activityState, auraFor, damageState, paletteFor, seedOf,
-  silhouetteFor, tierForLevel, tierProgress, type BuildingVisual,
+  activityState, auraFor, damageState, facesFor, paletteFor, readHsl,
+  seedOf, shiftHsl, silhouetteFor, tierForLevel, tierProgress,
+  type BuildingVisual,
 } from './visual.js';
 
 const b = (over: Partial<BuildingVisual> = {}): BuildingVisual => ({
@@ -179,5 +180,59 @@ describe('era and category colouring', () => {
   it('survives an unknown category or a wild era rather than drawing nothing', () => {
     expect(paletteFor('Nonsense', 99).wall).toMatch(/^hsl\(/);
     expect(paletteFor('Extraction', 0).wall).toMatch(/^hsl\(/);
+  });
+});
+
+/**
+ * The stylised lighting model.
+ *
+ * The whole point of `facesFor` is that a shadow is not "the wall, darker".
+ * It is a different, cooler, MORE saturated colour — that single choice is
+ * what separates a flat-shaded box from something that reads as toy-like and
+ * lit. These tests pin that intent, because it is exactly the sort of thing a
+ * later "simplification" would quietly undo.
+ */
+describe('the lighting model', () => {
+  const wall = 'hsl(30 60% 55%)';
+
+  it('reads an hsl triple back out, and shrugs at anything else', () => {
+    expect(readHsl(wall)).toEqual({ h: 30, s: 60, l: 55 });
+    expect(readHsl('rgb(1,2,3)')).toEqual({ h: 0, s: 0, l: 50 });
+  });
+
+  it('wraps hue and clamps saturation and lightness into legal ranges', () => {
+    expect(readHsl(shiftHsl('hsl(350 60% 55%)', 40, 0, 0)).h).toBe(30);
+    expect(readHsl(shiftHsl('hsl(10 5% 55%)', 0, -40, 0)).s).toBe(0);
+    expect(readHsl(shiftHsl(wall, 0, 0, 90)).l).toBeLessThanOrEqual(97);
+    expect(readHsl(shiftHsl(wall, 0, 0, -90)).l).toBeGreaterThanOrEqual(3);
+  });
+
+  it('shifts the shadow toward blue and UP in saturation, never toward grey', () => {
+    const f = facesFor(wall);
+    const lit = readHsl(f.lit);
+    const shadow = readHsl(f.shadow);
+    expect(shadow.h).toBeGreaterThan(lit.h);      // cooler
+    expect(shadow.s).toBeGreaterThan(lit.s);      // and more colourful, not less
+    expect(shadow.l).toBeLessThan(lit.l);
+  });
+
+  it('orders the faces the way a single key light would', () => {
+    const f = facesFor(wall);
+    const l = (c: string) => readHsl(c).l;
+    expect(l(f.rim)).toBeGreaterThan(l(f.top));
+    expect(l(f.top)).toBeGreaterThan(l(f.lit));
+    expect(l(f.lit)).toBeGreaterThan(l(f.shadow));
+    expect(l(f.shadow)).toBeGreaterThan(l(f.occlusion));
+  });
+
+  it('keeps every face in the wall\'s own colour family', () => {
+    for (const era of [1, 4, 8, 12]) {
+      for (const cat of ['Extraction', 'Military', 'Cultivation']) {
+        const w = paletteFor(cat, era).wall;
+        for (const face of Object.values(facesFor(w))) {
+          expect(face).toMatch(/^hsl\(/);
+        }
+      }
+    }
   });
 });

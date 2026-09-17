@@ -321,6 +321,75 @@ export function paletteFor(category: string, era: number): Palette {
 }
 
 /**
+ * Parse an `hsl(h s% l%)` string back to its components.
+ *
+ * The palette is generated as HSL strings precisely so the lighting model can
+ * work in hue space without a colour library.
+ */
+export function readHsl(css: string): { h: number; s: number; l: number } {
+  const m = /hsl\((\d+(?:\.\d+)?) (\d+(?:\.\d+)?)% (\d+(?:\.\d+)?)%\)/.exec(css);
+  if (!m) return { h: 0, s: 0, l: 50 };
+  return { h: Number(m[1]), s: Number(m[2]), l: Number(m[3]) };
+}
+
+const clamp01 = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
+
+/** Shift a colour in hue, saturation and lightness at once. */
+export function shiftHsl(css: string, dh: number, ds: number, dl: number): string {
+  const { h, s, l } = readHsl(css);
+  return `hsl(${(h + dh + 360) % 360} ${clamp01(s + ds, 0, 100)}% ${clamp01(l + dl, 3, 97)}%)`;
+}
+
+/** The colours one building's faces are painted, under one light. */
+export interface Faces {
+  /** The roof. Catches the key light most directly. */
+  top: string;
+  /** The face turned toward the light. */
+  lit: string;
+  /** The face turned away. Cool and saturated, never grey. */
+  shadow: string;
+  /** The bright edge where the light wraps the silhouette. */
+  rim: string;
+  /** Deepest occlusion, at the ground contact. */
+  occlusion: string;
+}
+
+/**
+ * KEY WARM, SHADOW COOL — the thing that makes stylised 3D read as stylised.
+ *
+ * Shading by lightness alone, which is what this did before, produces a
+ * building painted in three tints of one colour. It is correct and it looks
+ * like a chart. What a modern stylised game does instead is move the HUE with
+ * the light: the lit faces drift warm toward the key, and the shadowed face
+ * drifts cool — toward blue — while gaining saturation rather than losing it.
+ *
+ * That last part is the counter-intuitive one and it is the whole effect.
+ * Real shadows are not grey versions of the lit colour; they are bounced
+ * ambient light, which outdoors is sky, which is blue and strongly coloured.
+ * Desaturating a shadow makes it muddy. Saturating and cooling it makes the
+ * form pop and the whole scene look lit rather than merely tinted.
+ *
+ * The rim is the other half: a narrow band far brighter than anything else,
+ * where the light wraps the edge. It separates a building from whatever is
+ * behind it, which at sprite size matters more than any interior detail.
+ */
+export function facesFor(wall: string): Faces {
+  return {
+    // Roof: closest to the key, so warmest and brightest.
+    top: shiftHsl(wall, -8, 6, 14),
+    // Lit side: warm, a little brighter.
+    lit: shiftHsl(wall, -5, 4, 4),
+    // Shadow side: cooled hard toward blue, saturation UP, value down. The
+    // hue shift is large on purpose — a subtle one just looks like a mistake.
+    shadow: shiftHsl(wall, 26, 16, -28),
+    // Rim: the wrap light. Very bright, warm, and nearly white at the top end.
+    rim: shiftHsl(wall, -14, -18, 34),
+    // Contact occlusion: cool and deep, matching the shadow family.
+    occlusion: shiftHsl(wall, 30, 12, -42),
+  };
+}
+
+/**
  * The cultivation aura band, 0..1.
  *
  * Seven realm bands over 42 grades. Only cultivation and high-grade buildings
