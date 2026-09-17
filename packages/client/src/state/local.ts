@@ -448,6 +448,12 @@ export const localApi: Api = {
     });
   },
 
+  threat() {
+    const { world } = ensureWorld();
+    tick();
+    return wrap(() => wire(world.npcThreat()) as import('./api.js').ThreatDto);
+  },
+
   messages(box) {
     const { world, playerId } = ensureWorld();
     return wrap(() => {

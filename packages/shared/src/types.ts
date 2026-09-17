@@ -51,6 +51,17 @@ export interface Player {
   worldId: Uuid;
   name: string;
   era: number;
+  /**
+   * This "player" is a barbarian band run by the AI, not a person.
+   *
+   * Barbarians need a Player row because they own settlements and formations
+   * and those columns are not nullable, but they must never be mistaken for
+   * people: kills against them are capped at Steel (spec/03 §7), they are not
+   * eligible for leaderboards, and they cannot be messaged or treated with.
+   * Deriving "is this an NPC" from a null owner, as the engine used to, was
+   * wrong the moment a barbarian could hold ground.
+   */
+  isNpc?: boolean;
   allianceId?: Uuid;
   reputation: number;
   /**
@@ -424,6 +435,76 @@ export interface GovernorSpecs {
   escalationRules: { alertOnIncoming: boolean; alertBelowLoyalty: number };
 }
 
+// ------------------------------------------------------------- barbarians
+
+/**
+ * What a band wants, which decides what it does with what it takes.
+ *
+ * Doctrine is fixed at founding and never changes. It is the difference
+ * between four bands at the same menace behaving four different ways, and it
+ * is the only personality the AI has — deliberately, because a band whose
+ * behaviour a player can learn is a band a player can plan against.
+ */
+export type NpcDoctrine =
+  /** Takes and leaves. Prefers plunder over ground, escalates fastest, holds least. */
+  | 'raider'
+  /** Takes people. Farms other bands for levies; the largest armies, the worst ground. */
+  | 'slaver'
+  /** Takes offence. Grudges weigh double; will cross a map for a player who burned it. */
+  | 'zealot'
+  /** Takes territory. Slowest to escalate, but what it captures it keeps and fortifies. */
+  | 'warlord';
+
+/**
+ * A barbarian band: the actor behind an NPC player row.
+ *
+ * WHY THIS IS A ROW AND NOT A BEHAVIOUR TREE
+ *   Invariant §2.2 requires a world to replay identically from its event log.
+ *   An AI holding state in memory between decisions cannot do that. So the
+ *   entire mind of a band is these fields, every decision is a scheduled
+ *   event, and a replay reaches the same conclusions for the same reasons.
+ *
+ * WHY IT SLEEPS
+ *   Invariant §2.3 says idle objects cost nothing. A band below its activation
+ *   pressure schedules NOTHING; it is woken by a single timed event computed
+ *   from how fast pressure is currently rising, not by a scan. Ten thousand
+ *   dormant bands cost exactly as much as none.
+ */
+export interface NpcBand {
+  id: Uuid;
+  worldId: Uuid;
+  shardId: Uuid;
+  /** The Player row that owns the band's holdings and formations. */
+  playerId: Uuid;
+  name: string;
+  /** Where the band musters. Lose this and the band is finished. */
+  seatId: Uuid;
+  doctrine: NpcDoctrine;
+  /** 0..NPC_MAX_MENACE. Rises with world pressure; falls only on a real defeat. */
+  menace: number;
+  /** Holdings the band has ever held. The denominator of "are we losing". */
+  peakHoldings: number;
+  /** Total plunder taken. Barbarians convert this straight into troops. */
+  spoils: bigint;
+  /** playerId -> remembered injuries. Biases target selection toward a feud. */
+  grudges: Record<Uuid, number>;
+  /** The confederation this band belongs to, as a real Alliance row. */
+  confederacyId?: Uuid;
+  /** Set when the band starts building a doomsday engine. Public from this instant. */
+  doomsdayStartedAt?: Millis;
+  /** When the engine completes. The window between is the counterplay. */
+  doomsdayReadyAt?: Millis;
+  /** Spent once. A band gets exactly one doomsday engine, ever. */
+  doomsdayUsedAt?: Millis;
+  /**
+   * Pressure this band is waiting for before it wakes. Undefined while awake.
+   * Stored so a wake that arrives early can go straight back to sleep.
+   */
+  dormantUntilPressure?: number;
+  lastActedAt: Millis;
+  createdAt: Millis;
+}
+
 // ------------------------------------------------------------------- events
 
 export interface ScheduledEvent {
@@ -505,7 +586,10 @@ export type EventKind =
   | 'TRIBULATION_WINDOW'
   | 'DECAY_TICK'
   | 'HEAVENS_ENVY_RESOLVE'
-  | 'EPOCH_TRANSITION';
+  | 'EPOCH_TRANSITION'
+  | 'NPC_TURN'
+  | 'NPC_DOOMSDAY_READY'
+  | 'NPC_DOOMSDAY_STRIKE';
 
 /**
  * A tribulation standing open.

@@ -25,7 +25,7 @@ const PORT = 4173;
 const SITE = `http://127.0.0.1:${PORT}/`;
 const OUT = new URL('./smoke-output/', import.meta.url).pathname;
 
-const TABS = ['Attention', 'Map', 'Holding', 'Command', 'Forces', 'Research', 'Dao', 'Stewards', 'Pacts', 'Hall', 'Reports', 'Sim', 'Codex'];
+const TABS = ['Attention', 'Map', 'Holding', 'Command', 'Forces', 'Research', 'Dao', 'Stewards', 'Pacts', 'Wilds', 'Hall', 'Reports', 'Sim', 'Codex'];
 
 /**
  * Click something in the page body.
@@ -240,6 +240,19 @@ async function main() {
       check('an unsigned proposal says it binds nobody', /binds nobody/i.test(pactsAfter), pactsAfter.slice(0, 120));
     }
     await page.screenshot({ path: `${OUT}/25-diplomacy.png` });
+
+    // --- THE BARBARIANS SHOW THEIR WORKING --------------------------------
+    // An AI that escalates in the dark is indistinguishable from one that
+    // cheats. The screen has to publish the pressure with its derivation, the
+    // ladder each band is on, and the advantages barbarians hold over players.
+    await tab(TABS.indexOf('Wilds'));
+    await page.waitForTimeout(1200);
+    const wilds = await page.locator('.main').innerText();
+    check('the barbarian threat is shown with its derivation', /Pressure\s+\d/i.test(wilds), wilds.slice(0, 120));
+    check('and says plainly that the players caused most of it', /settled territory/i.test(wilds));
+    check('the escalation ladder says what each tier unlocks', /menace \d/i.test(wilds));
+    check('the advantages barbarians hold are published, not hidden', /cannot/i.test(wilds));
+    await page.screenshot({ path: `${OUT}/26-wilds.png` });
 
     // --- THE SETTLEMENT IS A PLACE, NOT A TABLE ---------------------------
     // The graphical view is the game's main surface. It has to actually draw

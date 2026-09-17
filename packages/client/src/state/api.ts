@@ -233,6 +233,30 @@ export interface LeaderboardsDto {
   me: string;
 }
 
+/**
+ * What the barbarians are, and what the players did to cause it.
+ *
+ * Deliberately verbose. The whole design position on an escalating AI is that
+ * it has to be legible — the tier, what that tier unlocks, the pressure and its
+ * three terms, and the list of things barbarians can do that players cannot.
+ */
+export interface ThreatDto {
+  pressure: { total: number; terms: { label: string; amount: number; detail: string }[] };
+  bands: {
+    id: string;
+    name: string;
+    doctrine: string;
+    menace: number;
+    rung: { name: string; unlocks: string };
+    holdings: number;
+    seatName: string;
+    confederacy?: string;
+    doomsdayReadyAt?: string;
+    dossier: string;
+  }[];
+  privileges: { key: string; name: string; detail: string }[];
+}
+
 export interface MessageDto {
   id: string; fromId: string; toId: string; fromName: string; toName: string;
   subject: string; body: string; sentAt: string; readAt?: string; archivedAt?: string;
@@ -314,6 +338,7 @@ export interface Api {
   acceptTreaty(treatyId: string): Promise<TreatyDto>;
   breakTreaty(treatyId: string): Promise<{ treaty: TreatyDto; reputationLost: number; effectiveAt: string }>;
   leaderboards(board?: string): Promise<LeaderboardsDto>;
+  threat(): Promise<ThreatDto>;
   messages(box?: 'in' | 'out' | 'archive'): Promise<InboxDto>;
   sendMessage(args: { toId: string; subject: string; body: string }): Promise<MessageDto>;
   readMessage(id: string): Promise<MessageDto>;
@@ -393,6 +418,7 @@ const remoteApi: Api = {
   breakTreaty: (treatyId) =>
     call(`/treaties/${treatyId}/break`, { method: 'POST', body: JSON.stringify({ commandId: newCommandId() }) }),
   leaderboards: (board) => call(`/leaderboards${board ? `?board=${encodeURIComponent(board)}` : ''}`),
+  threat: () => call('/threat'),
   messages: (box) => call(`/messages${box ? `?box=${box}` : ''}`),
   sendMessage: (args) =>
     call('/messages', { method: 'POST', body: JSON.stringify({ commandId: newCommandId(), ...args }) }),

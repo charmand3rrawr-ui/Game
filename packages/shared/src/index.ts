@@ -13,6 +13,7 @@ export * from './formulas.js';
 export * from './xp.js';
 export * from './units.js';
 export * from './roster.js';
+export * from './npc.js';
 export * from './types.js';
 export * from './api/index.js';
 export { C, CONSTANT_META, BALANCE_REVISION, ASSUMED_CONSTANTS } from './generated/constants.js';

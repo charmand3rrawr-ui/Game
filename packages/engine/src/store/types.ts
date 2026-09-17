@@ -29,6 +29,7 @@ import type {
   LoggedEvent,
   Message,
   Movement,
+  NpcBand,
   Post,
   Player,
   Proficiency,
@@ -66,6 +67,7 @@ export interface Tx {
   allianceMembers: KeyedRepo<AllianceMember>;
   treaties: Repo<Treaty>;
   governors: Repo<Governor>;
+  npcBands: Repo<NpcBand>;
   tribulations: Repo<Tribulation>;
   messages: Repo<Message>;
   threads: Repo<Thread>;

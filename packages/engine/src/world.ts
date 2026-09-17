@@ -34,6 +34,14 @@ import {
   temporalDebtAfterSpend,
   travelTimeMs,
   unitDef,
+  unitPowerValue,
+  menaceFor,
+  menaceRung,
+  worldPressure,
+  NPC_PRIVILEGES,
+  type NpcBand,
+  type NpcDoctrine,
+  type Pressure,
   type AttentionItem,
   type Battle,
   type Building,
@@ -106,6 +114,10 @@ import {
   auditGovernor, checkEscalation, corruptSpecs, governorTier, nextIntent, postureEffect,
   validateAppointment, type Audit, type Intent,
 } from './sim/governor.js';
+import {
+  commitForce, decide, describeBand, sleepFor, turnInterval,
+  type BandIntent, type BandSnapshot, type MusterSlice, type NeighbourSnapshot, type TargetSnapshot,
+} from './sim/npc.js';
 
 export class CommandError extends Error {
   constructor(
@@ -1697,7 +1709,9 @@ export class World {
       const out: KnownPlayer[] = [];
       for (const [id, count] of holdings) {
         const p = tx.players.get(id);
-        if (!p) continue;
+        // Barbarians sign nothing and read nothing. Offering one a treaty or a
+        // letter would be a dead end the UI had promised was a real option.
+        if (!p || p.isNpc) continue;
         out.push({ id, name: p.name, reputation: p.reputation, allianceId: p.allianceId, holdings: count });
       }
       return out.sort((a, b) => a.name.localeCompare(b.name));
@@ -1737,6 +1751,11 @@ export class World {
 
       const out: BoardSubject[] = [];
       for (const p of tx.players.all()) {
+        // Barbarians hold ground and would otherwise rank, sometimes at the
+        // top of it. A leaderboard is a comparison between people; a horde on
+        // it is a category error, and by the late game it would be most of the
+        // board.
+        if (p.isNpc) continue;
         // Only players with a presence on this shard. A galaxy-wide board would
         // rank people the viewer has no way to reach.
         if (!holdings.has(p.id) && p.id !== playerId) continue;
@@ -1785,7 +1804,11 @@ export class World {
   sendMessage(args: { commandId: Uuid; fromId: Uuid; toId: Uuid; subject: string; body: string }): Message {
     return this.idempotent(args.commandId, (tx) => {
       tx.players.require(args.fromId);
-      tx.players.require(args.toId);
+      const to = tx.players.require(args.toId);
+      // Barbarians do not read their post. A band posts to the world board when
+      // it has something to say and answers nothing; letting a letter be
+      // addressed to one would be a promise the game cannot keep.
+      if (to.isNpc) throw new CommandError('validation', 'barbarians do not take letters');
 
       const since = this.clock - BigInt(C.MESSAGE_WINDOW_MS);
       const sentInWindow = countWhere(
@@ -2010,7 +2033,10 @@ export class World {
       .on('MOVEMENT_ARRIVE', (tx, e, now) => this.onMovementArrive(tx, e, now))
       .on('HEAVENS_ENVY_RESOLVE', (tx, e, now) => this.onEnvyResolve(tx, e, now))
       .on('TRIBULATION_WINDOW', (tx, e, now) => this.onTribulation(tx, e, now))
-      .on('CONVOY_ARRIVE', (tx, e, now) => this.onConvoyArrive(tx, e, now));
+      .on('CONVOY_ARRIVE', (tx, e, now) => this.onConvoyArrive(tx, e, now))
+      .on('NPC_TURN', (tx, e, now) => this.onNpcTurn(tx, e, now))
+      .on('NPC_DOOMSDAY_READY', (tx, e, now) => this.onDoomsdayReady(tx, e, now))
+      .on('NPC_DOOMSDAY_STRIKE', (tx, e, now) => this.onDoomsdayStrike(tx, e, now));
   }
 
   private onBuildComplete(tx: Tx, e: ScheduledEvent, now: Millis): void {
@@ -2301,8 +2327,11 @@ export class World {
       defenderEmpireWeight: input.defender.empireWeight,
       attackerEra: input.attacker.era,
       defenderEra: input.defender.era,
-      defenderIsNpc: !target.ownerId,
-      attackerIsNpc: !attackerPlayer,
+      // A barbarian band owns its ground, so "unowned" no longer identifies an
+      // NPC and the flag on the player row does. Getting this wrong would let a
+      // formation ride barbarian kills past Steel, which spec/03 §7 forbids.
+      defenderIsNpc: !target.ownerId || defenderPlayer?.isNpc === true,
+      attackerIsNpc: !attackerPlayer || attackerPlayer.isNpc === true,
       linkedAccounts:
         attackerPlayer?.linkGroupId !== undefined && attackerPlayer.linkGroupId === defenderPlayer?.linkGroupId,
     });
@@ -2339,6 +2368,22 @@ export class World {
       actorId: m.ownerId,
       subjectId: target.id,
       payload: { battleId: battle.id, outcome: result.report.outcome, captured: result.captured },
+    });
+
+    // Barbarian bookkeeping: spoils become levies, defeats cost menace, and
+    // everyone remembers who burned them. Kept out of the battle path proper
+    // because none of it changes the outcome — it is what the world does with
+    // an outcome that has already been decided.
+    this.npcAftermath(tx, {
+      attackerId: m.ownerId,
+      attackerPlayer,
+      defenderPlayer,
+      target: updatedTarget,
+      originId: origin?.id,
+      plunder: result.plunder,
+      attackerWon: result.report.outcome === 'attacker',
+      captured: result.captured,
+      now,
     });
 
     const summary = `${result.report.outcome === 'attacker' ? 'Attacker' : 'Defender'} prevailed at ${target.name}${result.captured ? ' — the settlement changed hands' : ''}.`;
@@ -2856,10 +2901,906 @@ export class World {
     );
   }
 
+
+  // ==========================================================================
+  // Barbarians
+  //
+  // The AI lives in sim/npc.ts and is pure; everything here is the seam that
+  // feeds it a snapshot and carries out what it decides. The division matters:
+  // a replay reaches the same decisions because `decide` cannot see anything
+  // this method did not put in front of it.
+  // ==========================================================================
+
+  /**
+   * How dangerous the world has become, with the derivation attached.
+   *
+   * O(players + settlements), and called only on a band's turn or when a
+   * player asks — never on a timer, and never per idle entity (invariant §2.3).
+   */
+  npcPressure(): Pressure {
+    return this.store.read((tx) => this.pressureIn(tx));
+  }
+
+  private pressureIn(tx: Tx): Pressure {
+    const players = tx.players.all();
+    let founded = this.clock;
+    let strongest = 0;
+    for (const p of players) {
+      if (p.createdAt < founded) founded = p.createdAt;
+      if (p.isNpc) continue;
+      const w = this.empireWeightIn(tx, p.id);
+      if (w > strongest) strongest = w;
+    }
+    const humans = new Set(players.filter((p) => !p.isNpc).map((p) => p.id));
+    const playerHoldings = countWhere(tx.settlements.all(), (s) => s.ownerId !== undefined && humans.has(s.ownerId));
+
+    return worldPressure({
+      worldAgeDays: Number(this.clock - founded) / 86_400_000,
+      strongestEmpireWeight: strongest,
+      playerHoldings,
+    });
+  }
+
+  /**
+   * Found a band. Its player row is a real row so it can own things, and it
+   * carries `isNpc` so nothing ever mistakes it for a person.
+   */
+  foundBand(args: {
+    shardId: Uuid;
+    name: string;
+    doctrine: NpcDoctrine;
+    seatId: Uuid;
+    now: Millis;
+  }): NpcBand {
+    return this.store.transaction((tx) => {
+      const seat = tx.settlements.require(args.seatId);
+      const playerId = this.ids.next('pl', args.now);
+      const dynastyId = this.ids.next('dy', args.now);
+      tx.players.put({
+        id: playerId,
+        dynastyId,
+        worldId: this.worldId,
+        name: args.name,
+        era: 1,
+        isNpc: true,
+        reputation: 0,
+        empireWeightAvg: 0,
+        cultivationGrade: 1,
+        qi: 0n,
+        temporalDebt: 0,
+        envyScopes: [],
+        shardBalanceHours: 0,
+        shardHoursPurchased30d: 0,
+        createdAt: args.now,
+      });
+      tx.settlements.put({ ...seat, ownerId: playerId });
+
+      const band: NpcBand = {
+        id: this.ids.next('npc', args.now),
+        worldId: this.worldId,
+        shardId: args.shardId,
+        playerId,
+        name: args.name,
+        seatId: args.seatId,
+        doctrine: args.doctrine,
+        menace: 0,
+        peakHoldings: 1,
+        spoils: 0n,
+        grudges: {},
+        lastActedAt: args.now,
+        createdAt: args.now,
+      };
+      tx.npcBands.put(band);
+
+      // The band's first turn. Almost certainly a sleep, which is the point:
+      // founding a band costs one scheduled event and then nothing at all
+      // until the world is worth waking for.
+      this.scheduler.schedule(tx, {
+        shardId: band.shardId,
+        executeAt: args.now + turnInterval(1),
+        kind: 'NPC_TURN',
+        payload: { bandId: band.id },
+      });
+      return band;
+    });
+  }
+
+  /**
+   * One band decides and acts.
+   *
+   * Always re-schedules itself before returning — a band that failed to book
+   * its next turn would fall out of the world silently, which is the one
+   * failure mode an event-driven AI has that a tick loop does not.
+   */
+  private onNpcTurn(tx: Tx, e: ScheduledEvent, now: Millis): void {
+    const { bandId } = e.payload as { bandId: string };
+    const band = tx.npcBands.get(bandId);
+    if (!band) return;
+
+    // A band without a seat is finished. Players killed it; it does not come
+    // back, and it stops costing anything immediately.
+    const seat = tx.settlements.get(band.seatId);
+    if (!seat || seat.ownerId !== band.playerId) {
+      this.breakBand(tx, band, now, 'its seat was taken');
+      return;
+    }
+
+    const snap = this.npcSnapshot(tx, band, seat, now);
+    const intent = decide(snap);
+    const menace = menaceFor(snap.pressure, band.doctrine);
+
+    // Menace is stored so the client can show it without recomputing pressure,
+    // and so a defeat can knock it down below what pressure alone would give.
+    if (menace > band.menace) tx.npcBands.put({ ...band, menace });
+
+    this.logBand(tx, band, now, intent.kind, intent.reason, { menace });
+    this.executeIntent(tx, { ...band, menace: Math.max(band.menace, menace) }, snap, intent, now);
+  }
+
+  /** Everything one band can see, and nothing else. */
+  private npcSnapshot(tx: Tx, band: NpcBand, seat: Settlement, now: Millis): BandSnapshot {
+    const pressure = this.pressureIn(tx).total;
+    const players = new Map(tx.players.all().map((p) => [p.id, p]));
+
+    const targets: TargetSnapshot[] = [];
+    for (const s of tx.settlements.all()) {
+      if (s.shardId !== band.shardId) continue;
+      // A ruin is not worth marching on; an intact camp is.
+      if (s.integrity <= 0) continue;
+      const garrison = tx.formations
+        .where((f) => f.settlementId === s.id)
+        .reduce((n, f) => n + unitPowerValue(unitDef(f.unitKey).upkeep, 0) * f.count, 0);
+      const loot = tx.stockpiles.where((k) => k.settlementId === s.id).reduce((n, k) => n + Number(k.amount), 0);
+      const wallGrade = Math.max(
+        0,
+        ...tx.buildings
+          .where((b) => b.settlementId === s.id && buildingRef(b.buildingKey).category === 'Defense')
+          .map((b) => gradeForLevel(b.level)),
+        0,
+      );
+      targets.push({
+        settlementId: s.id,
+        name: s.name,
+        ownerId: s.ownerId,
+        ownerIsNpc: s.ownerId !== undefined && players.get(s.ownerId)?.isNpc === true,
+        isSelf: s.ownerId === band.playerId,
+        coordX: s.coordX,
+        coordY: s.coordY,
+        garrison,
+        loot,
+        wallGrade,
+      });
+    }
+    // A stable order, so two runs weigh the same targets in the same sequence
+    // and a tie resolves identically (invariant §2.2).
+    targets.sort((a, b) => (a.settlementId < b.settlementId ? -1 : a.settlementId > b.settlementId ? 1 : 0));
+
+    const neighbours: NeighbourSnapshot[] = [];
+    for (const other of tx.npcBands.all()) {
+      if (other.id === band.id || other.shardId !== band.shardId) continue;
+      const otherSeat = tx.settlements.get(other.seatId);
+      if (!otherSeat) continue;
+      neighbours.push({
+        bandId: other.id,
+        playerId: other.playerId,
+        name: other.name,
+        menace: other.menace,
+        seatX: otherSeat.coordX,
+        seatY: otherSeat.coordY,
+        confederacyId: other.confederacyId,
+      });
+    }
+    neighbours.sort((a, b) => (a.bandId < b.bandId ? -1 : a.bandId > b.bandId ? 1 : 0));
+
+    const muster: MusterSlice[] = tx.formations
+      .where((f) => f.ownerId === band.playerId && f.settlementId === band.seatId && f.count > 0)
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .map((f) => ({ formationId: f.id, unitKey: f.unitKey, count: f.count }));
+
+    return {
+      band,
+      seatX: seat.coordX,
+      seatY: seat.coordY,
+      holdings: countWhere(tx.settlements.all(), (s) => s.ownerId === band.playerId),
+      muster,
+      targets,
+      neighbours,
+      pressure,
+      now,
+    };
+  }
+
+  /** Carry out one decision, then book the next turn. */
+  private executeIntent(tx: Tx, band: NpcBand, snap: BandSnapshot, intent: BandIntent, now: Millis): void {
+    switch (intent.kind) {
+      case 'sleep': {
+        tx.npcBands.put({ ...band, dormantUntilPressure: intent.untilPressure, lastActedAt: now });
+        this.scheduler.schedule(tx, {
+          shardId: band.shardId,
+          executeAt: now + sleepFor(snap.pressure, intent.untilPressure),
+          kind: 'NPC_TURN',
+          payload: { bandId: band.id },
+        });
+        return;
+      }
+
+      case 'confederate': {
+        this.confederate(tx, band, intent.withBandId, now);
+        break;
+      }
+
+      case 'raid':
+      case 'conquer': {
+        this.npcMarch(tx, band, intent.targetId, intent.commit, intent.kind === 'raid' ? 'raid' : 'conquer', now);
+        break;
+      }
+
+      case 'warpath': {
+        this.warpath(tx, band, intent, now);
+        break;
+      }
+
+      case 'doomsday': {
+        const readyAt = now + BigInt(C.NPC_DOOMSDAY_BUILD_MS);
+        tx.npcBands.put({ ...band, doomsdayStartedAt: now, doomsdayReadyAt: readyAt, lastActedAt: now });
+        this.scheduler.schedule(tx, {
+          shardId: band.shardId,
+          executeAt: readyAt,
+          kind: 'NPC_DOOMSDAY_READY',
+          payload: { bandId: band.id, targetId: intent.targetId },
+        });
+        // Announced the instant work begins, to everyone, by name. A last
+        // resort nobody saw coming is not a mechanic, it is a punishment —
+        // this window is what makes taking the band's seat the answer.
+        this.announceDoomsday(tx, band, intent.targetId, readyAt, now);
+        break;
+      }
+
+      case 'wait': {
+        tx.npcBands.put({ ...band, lastActedAt: now });
+        // A band that has nothing left to march with raises warriors from the
+        // ground it holds. Without this, one bad battle finishes a band
+        // permanently: it keeps its territory, keeps taking turns, and can
+        // never act again — and a world goes quiet for good the first time a
+        // player wins properly. Barbarians live off the country they hold.
+        if (snap.muster.length === 0) this.tribute(tx, band, now);
+        break;
+      }
+    }
+
+    this.scheduler.schedule(tx, {
+      shardId: band.shardId,
+      executeAt: now + turnInterval(band.menace),
+      kind: 'NPC_TURN',
+      payload: { bandId: band.id },
+    });
+  }
+
+  /**
+   * Send a column. NPC-only path: no command id, no ownership prompt, no
+   * treaty check — barbarians sign nothing, so there is nothing to break.
+   *
+   * `arriveAt` overrides the computed arrival, which is how a warpath lands
+   * several columns in the same instant from different distances.
+   */
+  private npcMarch(
+    tx: Tx,
+    band: NpcBand,
+    targetId: Uuid,
+    commit: readonly MusterSlice[],
+    mission: 'raid' | 'conquer',
+    now: Millis,
+    arriveAt?: Millis,
+  ): Movement | undefined {
+    const origin = tx.settlements.get(band.seatId);
+    const target = tx.settlements.get(targetId);
+    if (!origin || !target || commit.length === 0) return undefined;
+
+    let slowest = Infinity;
+    const slices: { formationId: string; count: number }[] = [];
+    for (const slice of commit) {
+      const f = tx.formations.get(slice.formationId);
+      if (!f || f.count < slice.count) continue;
+      slowest = Math.min(slowest, unitDef(f.unitKey).speed);
+      tx.formations.put({ ...f, count: f.count - slice.count });
+      slices.push({ formationId: f.id, count: slice.count });
+    }
+    if (slices.length === 0 || !Number.isFinite(slowest)) return undefined;
+
+    const travel = travelTimeMs(distance(origin.coordX, origin.coordY, target.coordX, target.coordY), slowest, 1, 1, false);
+    const movement: Movement = {
+      id: this.ids.next('mv', now),
+      shardId: band.shardId,
+      ownerId: band.playerId,
+      originId: origin.id,
+      targetId,
+      mission,
+      formations: slices,
+      departsAt: now,
+      arrivesAt: arriveAt ?? now + travel,
+      revealedTo: [],
+    };
+    tx.movements.put(movement);
+    this.scheduler.schedule(tx, {
+      shardId: band.shardId,
+      executeAt: movement.arrivesAt,
+      kind: 'MOVEMENT_ARRIVE',
+      payload: { movementId: movement.id },
+    });
+
+    // The defender gets the same warning they would get from a player. A
+    // barbarian attack that arrived unannounced would be the one attack in the
+    // game with no counterplay.
+    if (target.ownerId && target.ownerId !== band.playerId) {
+      this.emit('attack.incoming', `player:${target.ownerId}`, {
+        movementId: movement.id,
+        targetId,
+        arrivesAt: movement.arrivesAt.toString(),
+        estimatedSize: slices.reduce((n, f) => n + f.count, 0),
+        flags: [mission, 'barbarian'],
+      });
+    }
+    return movement;
+  }
+
+  /**
+   * Found or join a confederation.
+   *
+   * Reuses the players' own alliance tables, so a confederation appears on the
+   * Pacts screen beside human alliances and can be read the same way. Making
+   * barbarian diplomacy a parallel private structure would have hidden the one
+   * development players most need to see coming.
+   */
+  private confederate(tx: Tx, band: NpcBand, withBandId: Uuid, now: Millis): void {
+    const other = tx.npcBands.get(withBandId);
+    if (!other) return;
+
+    let allianceId = other.confederacyId ?? band.confederacyId;
+    if (allianceId === undefined || !tx.alliances.get(allianceId)) {
+      allianceId = this.ids.next('al', now);
+      tx.alliances.put({
+        id: allianceId,
+        worldId: this.worldId,
+        name: `The ${band.name} Confederacy`,
+        tag: band.name.slice(0, 4).toUpperCase(),
+        treasury: {},
+        foundedAt: now,
+      });
+      tx.allianceMembers.put({ allianceId, playerId: other.playerId, role: 'member', permissions: [], joinedAt: now });
+      tx.npcBands.put({ ...other, confederacyId: allianceId });
+      const otherPlayer = tx.players.get(other.playerId);
+      if (otherPlayer) tx.players.put({ ...otherPlayer, allianceId });
+    }
+
+    tx.allianceMembers.put({ allianceId, playerId: band.playerId, role: 'leader', permissions: [], joinedAt: now });
+    tx.npcBands.put({ ...band, confederacyId: allianceId, lastActedAt: now });
+    const player = tx.players.get(band.playerId);
+    if (player) tx.players.put({ ...player, allianceId });
+
+    const alliance = tx.alliances.get(allianceId);
+    tx.appendEvent({
+      id: this.ids.next('log', now),
+      worldId: this.worldId,
+      shardId: band.shardId,
+      occurredAt: now,
+      kind: 'npc.confederated',
+      actorId: band.playerId,
+      subjectId: allianceId,
+      payload: { bands: [band.name, other.name], name: alliance?.name },
+    });
+    this.emit('npc.confederated', `shard:${band.shardId}`, {
+      allianceId,
+      name: alliance?.name,
+      bands: [band.name, other.name],
+      summary: `${band.name} and ${other.name} have sworn to each other. The barbarians are no longer separate problems.`,
+    });
+  }
+
+  /**
+   * A joint strike that arrives in one instant.
+   *
+   * THE PRIVILEGE: every column lands at the same moment regardless of where
+   * it set out from or how slow it is. Players have to compute this by hand,
+   * launching each wave at a different time, and getting it right is one of
+   * the real skills of the genre. Barbarians simply do it — and it is written
+   * down in NPC_PRIVILEGES so a player who wonders how they did that can read
+   * the answer rather than conclude the game is broken.
+   */
+  private warpath(
+    tx: Tx,
+    band: NpcBand,
+    intent: { targetId: Uuid; withBandIds: Uuid[]; commit: MusterSlice[]; mission: 'raid' | 'conquer' },
+    now: Millis,
+  ): void {
+    const target = tx.settlements.get(intent.targetId);
+    if (!target) return;
+
+    // Everyone arrives when the SLOWEST of them could have. Nobody is teleported
+    // forward; the fast columns simply wait, which is the part a player cannot
+    // do because their armies have no way to loiter out of contact.
+    const members = [band, ...intent.withBandIds.map((id) => tx.npcBands.get(id)).filter(isBand)];
+    let latest = 0n;
+    for (const member of members) {
+      const seat = tx.settlements.get(member.seatId);
+      if (!seat) continue;
+      const muster: MusterSlice[] = tx.formations
+        .where((f) => f.ownerId === member.playerId && f.settlementId === member.seatId && f.count > 0)
+        .map((f) => ({ formationId: f.id, unitKey: f.unitKey, count: f.count }));
+      if (muster.length === 0) continue;
+      const slowest = Math.min(...muster.map((m) => unitDef(m.unitKey).speed));
+      const t = travelTimeMs(distance(seat.coordX, seat.coordY, target.coordX, target.coordY), slowest, 1, 1, false);
+      if (t > latest) latest = t;
+    }
+    const arriveAt = now + latest;
+
+    let marched = 0;
+    for (const member of members) {
+      const commit =
+        member.id === band.id
+          ? intent.commit
+          : commitForce(
+              tx.formations
+                .where((f) => f.ownerId === member.playerId && f.settlementId === member.seatId && f.count > 0)
+                .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+                .map((f) => ({ formationId: f.id, unitKey: f.unitKey, count: f.count })),
+              C.NPC_MUSTER_FRACTION,
+            );
+      if (this.npcMarch(tx, member, intent.targetId, commit, intent.mission, now, arriveAt)) marched++;
+    }
+    tx.npcBands.put({ ...band, lastActedAt: now });
+
+    if (marched > 0 && target.ownerId) {
+      this.emit('npc.warpath', `player:${target.ownerId}`, {
+        targetId: target.id,
+        arrivesAt: arriveAt.toString(),
+        columns: marched,
+        summary: `${marched} barbarian columns are converging on ${target.name} and they will arrive together.`,
+      });
+    }
+  }
+
+  /**
+   * Work on a doomsday engine begins — publicly, by name, with a date.
+   *
+   * Written to the world board and posted to every player on the shard. This
+   * is the single most important message the AI ever sends, because it is the
+   * one that turns an unanswerable weapon into a deadline.
+   */
+  private announceDoomsday(tx: Tx, band: NpcBand, targetId: Uuid, readyAt: Millis, now: Millis): void {
+    const target = tx.settlements.get(targetId);
+    const seat = tx.settlements.get(band.seatId);
+    const body =
+      `Word out of ${seat?.name ?? 'the deep country'}: the ${band.name} are building something. ` +
+      `Whatever it is, it is far too large to be a siege tower, and they are not hiding the work.\n\n` +
+      `It will be finished in ${humanise(readyAt - now)}. It is meant for ${target?.name ?? 'somewhere south of here'}.\n\n` +
+      `They have been driven back to ${band.peakHoldings > 0 ? `${countWhere(tx.settlements.all(), (s) => s.ownerId === band.playerId)} of ${band.peakHoldings}` : 'a handful of'} camps ` +
+      `and this is what is left to them. Burn ${seat?.name ?? 'their camp'} before it is done and it dies on the slipway.`;
+
+    const threadId = this.ids.next('th', now);
+    tx.threads.put({
+      id: threadId,
+      worldId: this.worldId,
+      scope: 'world',
+      authorId: band.playerId,
+      title: `The ${band.name} are building something`,
+      postCount: 1,
+      createdAt: now,
+      lastPostAt: now,
+    });
+    tx.posts.put({
+      id: this.ids.next('po', now),
+      threadId,
+      authorId: band.playerId,
+      body,
+      postedAt: now,
+    });
+
+    tx.appendEvent({
+      id: this.ids.next('log', now),
+      worldId: this.worldId,
+      shardId: band.shardId,
+      occurredAt: now,
+      kind: 'npc.doomsday.begun',
+      actorId: band.playerId,
+      subjectId: band.seatId,
+      payload: { bandId: band.id, targetId, readyAt: readyAt.toString() },
+    });
+    this.emit('npc.doomsday.begun', `shard:${band.shardId}`, {
+      bandId: band.id,
+      bandName: band.name,
+      seatId: band.seatId,
+      targetId,
+      readyAt: readyAt.toString(),
+      summary: `The ${band.name} have begun a doomsday engine. It is finished in ${humanise(readyAt - now)}.`,
+    });
+  }
+
+  /**
+   * The engine is finished. It marches.
+   *
+   * It is a real formation on a real movement, so it can be seen, intercepted
+   * and killed on the road like anything else. The payload resolves one
+   * millisecond before the column lands, so the assault that follows walks
+   * into whatever the blast left.
+   */
+  private onDoomsdayReady(tx: Tx, e: ScheduledEvent, now: Millis): void {
+    const { bandId, targetId } = e.payload as { bandId: string; targetId: string };
+    const band = tx.npcBands.get(bandId);
+    if (!band) return;
+
+    // The counterplay paid off: no seat, no engine. Nothing is scheduled and
+    // nothing arrives, which is exactly what the announcement promised.
+    const seat = tx.settlements.get(band.seatId);
+    if (!seat || seat.ownerId !== band.playerId) {
+      this.emit('npc.doomsday.averted', `shard:${band.shardId}`, {
+        bandId,
+        summary: `The ${band.name}'s engine died with their camp. It was never finished.`,
+      });
+      return;
+    }
+    const target = tx.settlements.get(targetId);
+    if (!target) return;
+
+    // The escort. A real formation of the heaviest thing the band can field,
+    // so all the ordinary combat arithmetic applies to it unchanged.
+    const heaviest = tx.formations
+      .where((f) => f.ownerId === band.playerId)
+      .sort((a, b) => unitDef(b.unitKey).upkeep - unitDef(a.unitKey).upkeep)[0];
+    const engine: Formation = {
+      id: this.ids.next('f', now),
+      settlementId: band.seatId,
+      ownerId: band.playerId,
+      name: `${band.name} Worldbreaker`,
+      unitKey: heaviest?.unitKey ?? '1|Spearman|Orthodox (Balanced)|Mortal',
+      count: C.NPC_DOOMSDAY_UNITS,
+      atkTier: 1, atkLevel: 0, atkXp: 0n,
+      defTier: 1, defLevel: 0, defXp: 0n,
+      equipment: {},
+      deeds: [],
+      createdAt: now,
+    };
+    tx.formations.put(engine);
+
+    const movement = this.npcMarch(
+      tx,
+      band,
+      targetId,
+      [{ formationId: engine.id, unitKey: engine.unitKey, count: engine.count }],
+      'conquer',
+      now,
+    );
+    if (!movement) return;
+
+    tx.npcBands.put({ ...band, doomsdayUsedAt: now });
+    this.scheduler.schedule(tx, {
+      shardId: band.shardId,
+      // One millisecond ahead of the column, so the ordering is explicit rather
+      // than a consequence of how two simultaneous events happen to sort.
+      executeAt: movement.arrivesAt - 1n,
+      kind: 'NPC_DOOMSDAY_STRIKE',
+      payload: { bandId: band.id, targetId, movementId: movement.id },
+    });
+
+    this.emit('npc.doomsday.launched', `shard:${band.shardId}`, {
+      bandId: band.id,
+      targetId,
+      arrivesAt: movement.arrivesAt.toString(),
+      summary: `The ${band.name} Worldbreaker is on the road to ${target.name}.`,
+    });
+  }
+
+  /**
+   * The engine lands.
+   *
+   * Flattens building grades and kills a share of the garrison, and writes both
+   * out with their arithmetic — invariant §2.7 is about battles, but a weapon
+   * that removed six grades of a player's city without showing its working
+   * would be the least explicable number in the game.
+   *
+   * It does not capture and it does not loot. It opens the assault that is one
+   * millisecond behind it; it does not replace it.
+   */
+  private onDoomsdayStrike(tx: Tx, e: ScheduledEvent, now: Millis): void {
+    const { bandId, targetId } = e.payload as { bandId: string; targetId: string };
+    const band = tx.npcBands.get(bandId);
+    const target = tx.settlements.get(targetId);
+    if (!band || !target) return;
+
+    const levelsLost: Record<string, number> = {};
+    for (const b of tx.buildings.where((row) => row.settlementId === targetId)) {
+      const before = b.level;
+      const after = Math.max(0, before - C.NPC_DOOMSDAY_RAZE_GRADES * C.LEVELS_PER_GRADE);
+      if (after === before) continue;
+      tx.buildings.put({ ...b, level: after, damage: b.damage + (before - after) });
+      levelsLost[b.buildingKey] = before - after;
+    }
+
+    const killed: Record<string, number> = {};
+    for (const f of tx.formations.where((row) => row.settlementId === targetId)) {
+      const dead = Math.floor(f.count * C.NPC_DOOMSDAY_GARRISON_KILL);
+      if (dead <= 0) continue;
+      killed[f.name] = dead;
+      tx.formations.put({ ...f, count: f.count - dead });
+    }
+
+    tx.appendEvent({
+      id: this.ids.next('log', now),
+      worldId: this.worldId,
+      shardId: target.shardId,
+      occurredAt: now,
+      kind: 'npc.doomsday.struck',
+      actorId: band.playerId,
+      subjectId: target.id,
+      payload: {
+        bandId: band.id,
+        razedGrades: C.NPC_DOOMSDAY_RAZE_GRADES,
+        garrisonKilledPct: C.NPC_DOOMSDAY_GARRISON_KILL,
+        levelsLost,
+        killed,
+      },
+    });
+
+    const summary =
+      `The ${band.name} Worldbreaker struck ${target.name}: ` +
+      `${C.NPC_DOOMSDAY_RAZE_GRADES} grades off every building it touched ` +
+      `(${Object.keys(levelsLost).length} of them), and ${Math.round(C.NPC_DOOMSDAY_GARRISON_KILL * 100)}% of the garrison dead before the enemy was even in sight.`;
+    this.emit('npc.doomsday.struck', `settlement:${target.id}`, { targetId, levelsLost, killed, summary });
+    if (target.ownerId) this.emit('npc.doomsday.struck', `player:${target.ownerId}`, { targetId, levelsLost, killed, summary });
+  }
+
+  /**
+   * What a battle does to the barbarians who fought in it.
+   *
+   * Spoils become levies with no building and no queue — the barbarian economy
+   * in one step, and the reason a band that sacks a rich holding is a bigger
+   * problem the same hour. Defeats cost menace. Everyone remembers.
+   */
+  private npcAftermath(
+    tx: Tx,
+    r: {
+      attackerId: Uuid;
+      attackerPlayer: Player | undefined;
+      defenderPlayer: Player | undefined;
+      target: Settlement;
+      originId: Uuid | undefined;
+      plunder: Record<string, bigint>;
+      attackerWon: boolean;
+      captured: boolean;
+      now: Millis;
+    },
+  ): void {
+    const attackerBand = r.attackerPlayer?.isNpc
+      ? tx.npcBands.find((b) => b.playerId === r.attackerId)
+      : undefined;
+    const defenderBand = r.defenderPlayer?.isNpc
+      ? tx.npcBands.find((b) => b.playerId === r.defenderPlayer?.id)
+      : undefined;
+
+    if (attackerBand) {
+      const taken = Object.values(r.plunder).reduce((n, v) => n + v, 0n);
+      let band: NpcBand = { ...attackerBand, spoils: attackerBand.spoils + taken };
+
+      if (taken > 0n && r.originId) this.levy(tx, band, taken, r.originId, r.now);
+
+      if (r.captured) {
+        const held = countWhere(tx.settlements.all(), (s) => s.ownerId === band.playerId);
+        band = { ...band, peakHoldings: Math.max(band.peakHoldings, held) };
+      }
+      if (!r.attackerWon) {
+        // A beaten band loses a rung. Menace that only ever rose would make
+        // fighting the barbarians pointless — the whole ladder has to be
+        // something players can push back down, or it is just a clock.
+        band = { ...band, menace: Math.max(0, band.menace - 1) };
+      }
+      tx.npcBands.put(band);
+    }
+
+    // The defending band remembers whoever came for it, whether or not they won.
+    if (defenderBand && !r.attackerPlayer?.isNpc && r.attackerPlayer) {
+      const grudges = { ...defenderBand.grudges };
+      grudges[r.attackerId] = (grudges[r.attackerId] ?? 0) + 1;
+      tx.npcBands.put({ ...defenderBand, grudges });
+    }
+
+    // A band whose seat has just changed hands is finished.
+    if (defenderBand && r.captured && r.target.id === defenderBand.seatId) {
+      this.breakBand(tx, defenderBand, r.now, 'its seat was taken');
+    }
+  }
+
+  /**
+   * Turn plunder into bodies.
+   *
+   * THE PRIVILEGE: no barracks, no queue, no training time. A player who took
+   * the same plunder would have to build a military facility, pay the resource
+   * cost again, and wait out a training timer computed at enqueue and never
+   * recomputed downward (invariant §2.8). Barbarians skip all three, and that
+   * is written down in NPC_PRIVILEGES.
+   */
+  private levy(tx: Tx, band: NpcBand, spoils: bigint, settlementId: Uuid, now: Millis): void {
+    const raised = Math.min(C.NPC_LEVY_MAX, Math.floor(Number(spoils) * C.NPC_LEVY_PER_SPOIL));
+    if (raised <= 0) return;
+
+    // Reinforce the existing levy rather than sprawling formations, so a band
+    // fields a few large columns instead of two hundred tiny ones — which also
+    // keeps its snapshot, and therefore its decisions, cheap.
+    const name = `${band.name} Levy`;
+    const existing = tx.formations.find((f) => f.ownerId === band.playerId && f.name === name);
+    if (existing) {
+      tx.formations.put({ ...existing, count: existing.count + raised, settlementId: existing.settlementId });
+    } else {
+      tx.formations.put({
+        id: this.ids.next('f', now),
+        settlementId,
+        ownerId: band.playerId,
+        name,
+        unitKey: '1|Spearman|Orthodox (Balanced)|Mortal',
+        count: raised,
+        atkTier: 1, atkLevel: 0, atkXp: 0n,
+        defTier: 1, defLevel: 0, defXp: 0n,
+        equipment: {},
+        deeds: [],
+        createdAt: now,
+      });
+    }
+
+    tx.appendEvent({
+      id: this.ids.next('log', now),
+      worldId: this.worldId,
+      shardId: band.shardId,
+      occurredAt: now,
+      kind: 'npc.levied',
+      actorId: band.playerId,
+      subjectId: band.id,
+      payload: { raised, fromSpoils: spoils.toString() },
+    });
+  }
+
+  /**
+   * The ground a band holds pays it in men.
+   *
+   * THE PRIVILEGE, again: no barracks, no queue, no training time — the same
+   * exemption as the plunder levy, for the same reason. A band that took twenty
+   * camps fields armies out of them; a player who took twenty settlements has
+   * to build and wait in every one.
+   *
+   * Only ever reached when a band is empty, so this rebuilds a beaten band
+   * rather than compounding a winning one.
+   */
+  private tribute(tx: Tx, band: NpcBand, now: Millis): void {
+    const holdings = countWhere(tx.settlements.all(), (s) => s.ownerId === band.playerId);
+    const raised = Math.min(C.NPC_LEVY_MAX, holdings * C.NPC_TRIBUTE_PER_HOLDING);
+    if (raised <= 0) return;
+
+    const name = `${band.name} Levy`;
+    const existing = tx.formations.find((f) => f.ownerId === band.playerId && f.name === name);
+    if (existing && existing.settlementId === band.seatId) {
+      tx.formations.put({ ...existing, count: existing.count + raised });
+    } else {
+      tx.formations.put({
+        id: this.ids.next('f', now),
+        settlementId: band.seatId,
+        ownerId: band.playerId,
+        name,
+        unitKey: '1|Spearman|Orthodox (Balanced)|Mortal',
+        count: raised,
+        atkTier: 1, atkLevel: 0, atkXp: 0n,
+        defTier: 1, defLevel: 0, defXp: 0n,
+        equipment: {},
+        deeds: [],
+        createdAt: now,
+      });
+    }
+    tx.appendEvent({
+      id: this.ids.next('log', now),
+      worldId: this.worldId,
+      shardId: band.shardId,
+      occurredAt: now,
+      kind: 'npc.tribute',
+      actorId: band.playerId,
+      subjectId: band.id,
+      payload: { raised, fromHoldings: holdings },
+    });
+  }
+
+  /** A band that has lost its seat stops existing, and stops costing anything. */
+  private breakBand(tx: Tx, band: NpcBand, now: Millis, why: string): void {
+    tx.npcBands.delete(band.id);
+    tx.appendEvent({
+      id: this.ids.next('log', now),
+      worldId: this.worldId,
+      shardId: band.shardId,
+      occurredAt: now,
+      kind: 'npc.broken',
+      actorId: band.playerId,
+      subjectId: band.id,
+      payload: { name: band.name, why },
+    });
+    this.emit('npc.broken', `shard:${band.shardId}`, {
+      bandId: band.id,
+      summary: `The ${band.name} are finished — ${why}.`,
+    });
+  }
+
+  private logBand(
+    tx: Tx,
+    band: NpcBand,
+    now: Millis,
+    decision: string,
+    reason: string,
+    extra: Record<string, unknown>,
+  ): void {
+    tx.appendEvent({
+      id: this.ids.next('log', now),
+      worldId: this.worldId,
+      shardId: band.shardId,
+      occurredAt: now,
+      kind: 'npc.decided',
+      actorId: band.playerId,
+      subjectId: band.id,
+      payload: { band: band.name, doctrine: band.doctrine, decision, reason, ...extra },
+    });
+  }
+
+  /**
+   * What a player is told about the barbarians.
+   *
+   * Everything: the pressure, its derivation, every band's menace and what that
+   * tier unlocks, and any engine currently under construction with its date. An
+   * AI that improves in the dark reads as cheating; the same AI showing its
+   * working reads as a threat you can plan against, which is the only version
+   * worth playing.
+   */
+  npcThreat(): {
+    pressure: Pressure;
+    bands: {
+      id: Uuid;
+      name: string;
+      doctrine: NpcDoctrine;
+      menace: number;
+      rung: { name: string; unlocks: string };
+      holdings: number;
+      seatName: string;
+      confederacy?: string;
+      doomsdayReadyAt?: string;
+      dossier: string;
+    }[];
+    privileges: typeof NPC_PRIVILEGES;
+  } {
+    return this.store.read((tx) => {
+      const pressure = this.pressureIn(tx);
+      const bands = tx.npcBands
+        .all()
+        .map((band) => {
+          const menace = Math.max(band.menace, menaceFor(pressure.total, band.doctrine));
+          const rung = menaceRung(menace);
+          return {
+            id: band.id,
+            name: band.name,
+            doctrine: band.doctrine,
+            menace,
+            rung: { name: rung.name, unlocks: rung.unlocks },
+            holdings: countWhere(tx.settlements.all(), (s) => s.ownerId === band.playerId),
+            seatName: tx.settlements.get(band.seatId)?.name ?? 'a camp nobody has found',
+            confederacy: band.confederacyId ? tx.alliances.get(band.confederacyId)?.name : undefined,
+            doomsdayReadyAt: band.doomsdayReadyAt?.toString(),
+            dossier: describeBand(band, menace),
+          };
+        })
+        .sort((a, b) => b.menace - a.menace || (a.name < b.name ? -1 : 1));
+      return { pressure, bands, privileges: NPC_PRIVILEGES };
+    });
+  }
+
   /** Force accrual now, for a settlement the caller is about to read. */
   refresh(settlementId: Uuid): void {
     this.store.transaction((tx) => this.settleAccrual(tx, this.viewIn(tx, settlementId)));
   }
+}
+
+/** Narrowing predicate so a warpath can drop bands that vanished mid-turn. */
+function isBand(b: NpcBand | undefined): b is NpcBand {
+  return b !== undefined;
 }
 
 function sideInput(

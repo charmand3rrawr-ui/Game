@@ -12,7 +12,7 @@ balance owner to confirm or correct.
 Correcting one means adding the real value to the appropriate workbook sheet and
 changing its reader in the importer from `C.assumed(...)` to `C.fromWorkbook(...)`.
 
-## 57 open assumptions
+## 78 open assumptions
 
 | Constant | Assumed value | Why it is not in the workbook | Reasoning for the value |
 |---|---|---|---|
@@ -73,6 +73,27 @@ changing its reader in the importer from `C.assumed(...)` to `C.fromWorkbook(...
 | `HAUL_MIN_CARGO` | 2000 | no published minimum convoy size | Smallest surplus worth dispatching a convoy for. Without it a resource policy produces a trickle of interceptable haulers rather than a supply line. |
 | `MESSAGE_WINDOW_MS` | 3600000 | spec/05 §5 rate-limits commands but says nothing about player-to-player messages | The window the message limit is measured over. One hour is long enough that a real negotiation never touches it and short enough that a mass-mail campaign stalls immediately. |
 | `MESSAGE_WINDOW_LIMIT` | 30 | no published cap on outbound messages | Messages one player may send per window. Sized for an alliance leader coordinating an operation, not for a broadcast: 30 an hour is far past normal conversation and far short of a mailing list. |
+| `NPC_PRESSURE_PER_DAY` | 0.04 | the specification models NPCs as scenery and gives no escalation curve | World pressure added per elapsed day. Deliberately small: time alone takes about three years to reach the tier at which barbarians take player cities, so a world nobody is winning stays a nuisance. Every faster route to the top of the ladder runs through the other two terms, which is the entire design — the barbarians answer the players, not the calendar. |
+| `NPC_PRESSURE_PER_WEIGHT` | 0.9 | no published relationship between player success and NPC threat | Pressure added per point of the strongest player’s empire weight. This is the term that makes the barbarians answer the players rather than the calendar: a world where someone is winning hard escalates years before a quiet one does. |
+| `NPC_PRESSURE_PER_HOLDING` | 1.4 | no published relationship between settled territory and NPC threat | Pressure added per settlement in player hands. Territory is the visible face of success and the thing barbarians can actually see, so it escalates them faster than anything abstract. |
+| `NPC_PRESSURE_PER_MENACE` | 18 | no published NPC escalation ladder | Pressure required per menace tier. Eight tiers span 0..126 pressure. A settled empire of a dozen holdings supplies most of that on its own within a year; three years of an empty calendar supplies about half of it. That ratio is the balance point of the whole system. |
+| `NPC_MAX_MENACE` | 7 | no published NPC escalation ladder | The top menace tier: skulk, raid, farm, take from other bands, confederate, coordinate, take from players, doomsday. Each tier adds one behaviour and never removes the ones below it. |
+| `NPC_TURN_BASE_MS` | 64800000 | no published NPC decision cadence | How long a band waits between decisions at menace 1. Deliberately slower than a player checks in, so a low-menace world is a background threat rather than a second job. |
+| `NPC_TURN_PER_MENACE` | 0.82 | no published NPC decision cadence | The turn interval is multiplied by this per menace tier, so a doomsday-era horde acts about four times as often as a raiding party. Escalation is felt as tempo before it is felt as size. |
+| `NPC_MUSTER_FRACTION` | 0.6 | no published NPC commitment rule | Share of a band’s strength committed to one attack. A band that emptied its seat would be free to counter-raid, so it always keeps a garrison — the same discipline a good player shows. |
+| `NPC_LEVY_PER_SPOIL` | 0.0006 | no published NPC growth rule | Units a band raises per unit of plunder taken. This is the barbarian economy in one number: they do not build, they do not queue, they convert loot straight into bodies. |
+| `NPC_LEVY_MAX` | 400 | no published NPC growth rule | Largest levy one raid can raise, so a single catastrophic sack does not produce an army that no player on the shard can answer. |
+| `NPC_TRIBUTE_PER_HOLDING` | 3 | no published NPC recovery rule | Warriors a band raises per turn, per settlement it holds, when it has nothing left to march with. Barbarians live off the ground they take, so a band that has been beaten but still holds territory rebuilds. Without this a band that loses one battle badly is finished forever, and a world goes permanently quiet the first time a player wins. |
+| `NPC_CONFEDERATE_MENACE` | 4 | no published NPC diplomacy | Menace at which bands begin forming confederations with each other. Below it every band is alone, which is what makes the first confederation a visible turning point in a world. |
+| `NPC_CONFEDERATE_RADIUS` | 140 | no published NPC diplomacy | How far apart two seats may be and still confederate. Barbarian politics are geographic: bands ally with the neighbours they would otherwise be fighting. |
+| `NPC_WARPATH_MENACE` | 5 | no published NPC coordination | Menace at which confederates strike the same target together, arriving in the same instant regardless of where they set out from. Players must time their own waves by hand. |
+| `NPC_GRUDGE_WEIGHT` | 0.25 | no published NPC memory | How strongly a band favours a target it already has a grudge against. Bands remember who burned them, which is what turns a punitive expedition into a feud. |
+| `NPC_DOOMSDAY_MENACE` | 7 | no published NPC last resort | Menace required before a band will even consider a doomsday engine. It is the top of the ladder and it is not sufficient on its own — the band must also be losing. |
+| `NPC_DOOMSDAY_LOSS_RATIO` | 0.5 | no published NPC last resort | A band builds a doomsday engine only once it has lost this share of the holdings it once held. "Last resort" is a state, not a timer: a band that is winning never builds one. |
+| `NPC_DOOMSDAY_BUILD_MS` | 259200000 | no published NPC last resort | How long the engine takes to build, announced publicly the moment work starts. This window is the counterplay: take the band’s seat before it finishes and the engine dies on the slipway. |
+| `NPC_DOOMSDAY_RAZE_GRADES` | 6 | no published NPC last resort | Building grades flattened at the target when the engine lands. Severe enough to be a disaster a player rebuilds from for weeks, bounded so it is never the end of that player’s game. |
+| `NPC_DOOMSDAY_GARRISON_KILL` | 0.45 | no published NPC last resort | Share of the defending garrison killed by the blast before the battle begins. Under half, so a well-defended settlement can still hold — the engine opens the assault, it does not replace it. |
+| `NPC_DOOMSDAY_UNITS` | 900 | no published NPC last resort | Size of the engine’s escort formation, which is what makes it a thing on the map a player can see coming and intercept rather than a number that arrives out of the sky. |
 
 ## What is NOT assumed
 

@@ -338,6 +338,27 @@ describe('governor and alliance endpoints (M8)', () => {
   });
 });
 
+describe('the barbarians show their working', () => {
+  it('publishes the pressure with its derivation and the ladder each band is on', async () => {
+    const { body } = await get('/v1/threat');
+
+    const pressure = body['pressure'] as { total: number; terms: { label: string; detail: string }[] };
+    expect(pressure.terms).toHaveLength(3);
+    // Two of the three terms are the players' own doing. That is the design
+    // claim the whole system rests on, so the endpoint has to name them.
+    expect(pressure.terms.map((t) => t.label)).toContain('settled territory');
+    expect(pressure.terms.map((t) => t.label)).toContain('the largest empire');
+
+    const bands = body['bands'] as { name: string; menace: number; rung: { unlocks: string } }[];
+    expect(bands.length).toBeGreaterThan(0);
+    for (const b of bands) expect(b.rung.unlocks.length).toBeGreaterThan(20);
+
+    // And the asymmetry is published rather than discovered the hard way.
+    const privileges = body['privileges'] as { key: string }[];
+    expect(privileges.map((p) => p.key).sort()).toEqual(['doomsday', 'levy', 'warpath', 'weightless']);
+  });
+});
+
 describe('the text layer around the game', () => {
   it('derives every leaderboard from live state', async () => {
     const { body } = await get('/v1/leaderboards');

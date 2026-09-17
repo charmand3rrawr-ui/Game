@@ -18,6 +18,7 @@ import {
   rngInt,
   type Formation,
   type Millis,
+  type NpcDoctrine,
   type Player,
   type Settlement,
   type Uuid,
@@ -30,6 +31,8 @@ export interface SeedOptions {
   now: Millis;
   /** How many AI-held neighbours to place around the player. */
   neighbours?: number;
+  /** How many barbarian bands to found in the wilds beyond them. */
+  barbarians?: number;
 }
 
 export interface SeededWorld {
@@ -158,6 +161,53 @@ export function seedWorld(opts: SeedOptions): SeededWorld {
       }
     }
 
+    /*
+     * The barbarians, in the wilds beyond the settled ring.
+     *
+     * Deliberately NOT placed on the abandoned camps among the neighbours. An
+     * abandoned holding is its own thing in this world — it decays, it leaves a
+     * ruin, and archaeology happens there (spec/02 §3) — and handing them all
+     * to bands would quietly delete that. Barbarians come from outside the
+     * settled country, which is also where a player expects to find them.
+     *
+     * Each band starts at menace 0: asleep, holding one scheduled event, and
+     * costing nothing until the world has become dangerous enough to be worth
+     * waking for — which in practice means until the player has started to win.
+     */
+    const bandCount = opts.barbarians ?? 3;
+    for (let i = 0; i < bandCount; i++) {
+      const name = BAND_NAMES[i % BAND_NAMES.length]!;
+      const doctrine = BAND_DOCTRINES[i % BAND_DOCTRINES.length]!;
+      // Clustered along one arc rather than ringed around the player.
+      //
+      // Spreading them evenly put every pair further apart than
+      // NPC_CONFEDERATE_RADIUS, which silently made confederations impossible —
+      // the bands would have climbed to menace 4 and then never found anyone to
+      // swear to. Clustering also reads better: the barbarian frontier is a
+      // PLACE, and a player learns which direction trouble comes from.
+      const arc = Math.PI * 0.4;
+      const angle = BAND_ARC_BEARING + ((i + 0.5) / bandCount - 0.5) * arc;
+      const radius = 150 + rngInt(rng, 40);
+      const seatId = world.ids.next('st', opts.now);
+      placeSettlement(tx, world, {
+        id: seatId, shardId, worldId,
+        name: `${name} Camp`,
+        holdingType: 'outpost_camp',
+        coordX: Math.round(Math.cos(angle) * radius),
+        coordY: Math.round(Math.sin(angle) * radius),
+        now: opts.now,
+      });
+      const band = world.foundBand({ shardId, name, doctrine, seatId, now: opts.now });
+      // Something to march with. A band with no warriors could never take its
+      // first raid, and a band that never raids never grows.
+      tx.formations.put(
+        garrison(world, seatId, band.playerId, '1|Spearman|Orthodox (Balanced)|Mortal', 60 + rngInt(rng, 40), `${name} Warband`, opts.now),
+      );
+      tx.formations.put(
+        garrison(world, seatId, band.playerId, '1|Hunter-Archer|Asura (Offense)|Mortal', 25 + rngInt(rng, 25), `${name} Outriders`, opts.now),
+      );
+    }
+
     // The player's own starting force.
     tx.formations.put(garrison(world, homeId, playerId, '1|Militia|Orthodox (Balanced)|Mortal', 120, 'The Hearth Levy', opts.now));
     tx.formations.put(garrison(world, homeId, playerId, '1|Hunter-Archer|Asura (Offense)|Mortal', 60, 'Verrin Longbows', opts.now));
@@ -282,6 +332,17 @@ export function seedWorld(opts: SeedOptions): SeededWorld {
 
   return { world, playerId, homeId };
 }
+
+/**
+ * Which way the wilds lie. Fixed rather than random so that every world put a
+ * player's back to the same quarter, and a returning player's instincts about
+ * where the raids come from stay worth something.
+ */
+const BAND_ARC_BEARING = -Math.PI / 2;
+
+/** Barbarian bands get names that do not sound like the neighbours'. */
+const BAND_NAMES = ['Ashjaw', 'Grimhold', 'Sablemaw', 'Ironcrow', 'Blackfen', 'Redwake'];
+const BAND_DOCTRINES: readonly NpcDoctrine[] = ['raider', 'warlord', 'slaver', 'zealot'];
 
 const NEIGHBOUR_NAMES = ['Aelric', 'Bryndis', 'Corvan', 'Dala', 'Esker', 'Fenwyn', 'Gorrim', 'Hestia'];
 

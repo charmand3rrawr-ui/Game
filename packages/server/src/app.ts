@@ -641,6 +641,21 @@ export async function buildApp(opts: AppOptions = {}): Promise<App> {
   // is private HERE rather than merely unrendered by the client.
   // ==========================================================================
 
+  /**
+   * The barbarians, and why they are as bad as they are.
+   *
+   * Public and unauthenticated beyond the usual player check, because there is
+   * nothing here worth hiding: the pressure, its three terms, every band's
+   * menace, what that tier unlocks, any engine under construction with its
+   * date, and the full list of things barbarians can do that players cannot.
+   * An AI that improves in the dark reads as cheating; the same AI showing its
+   * working reads as an opponent.
+   */
+  fastify.get('/v1/threat', async (req) => {
+    requirePlayer(req, seeded.playerId);
+    return wire(world.npcThreat());
+  });
+
   fastify.get<{ Querystring: { board?: string } }>('/v1/leaderboards', async (req) => {
     const playerId = requirePlayer(req, seeded.playerId);
     const key = BOARDS.find((b) => b.key === req.query.board)?.key ?? BOARDS[0]!.key;

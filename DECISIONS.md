@@ -344,3 +344,87 @@ Results are downscaled to the manifest size in a headless browser rather than
 with a native image library: one is already a dependency for the smoke tests,
 and 1024px originals across 5,943 assets would be tens of gigabytes of detail
 no player can see at the size these are drawn.
+
+---
+
+## D13 — The barbarians answer the players, not the calendar
+
+**Context.** The specification treats NPCs as scenery. It says exactly two
+things about them: that kills against them cannot carry a formation past Steel
+(spec/03 §7), and that an abandoned holding decays to an "NPC successor"
+(spec/02 §3). Everything else about what barbarians *do* is new design, so it
+is recorded here rather than inferred from a sheet that does not exist.
+
+**Decision.** A barbarian band is an actor with a row, a doctrine, and a rung on
+an eight-step ladder. What moves it up that ladder is **world pressure**, and
+pressure has three terms: the age of the world, the largest player empire on
+the shard, and how much ground is in player hands. The first is deliberately
+small — time alone takes about three years to reach the tier at which
+barbarians take cities. The other two dominate any world where anything is
+happening.
+
+That ratio is the whole design. A world nobody is winning stays a nuisance for
+months. A world with a runaway empire in it produces hordes that can take that
+empire's cities, and it produces them *because* of the empire. An escalation
+curve driven by the clock would have been far easier to build and would have
+been a timer wearing a costume.
+
+**Four consequences worth stating, because each was a choice:**
+
+- **The ladder adds, it never replaces.** A horde that conquers cities still
+  raids farms. Escalation should feel like a world getting worse, not a world
+  switching modes.
+
+- **Menace falls.** A band beaten in the field loses a rung. Without this the
+  ladder is a clock again, and fighting the barbarians would be pointless.
+
+- **Doctrine changes the rate, never the ceiling.** A raider escalates faster
+  than a warlord and a warlord keeps what it takes; both can reach the top. A
+  doctrine that capped a band would have made three quarters of the bands in
+  any world permanently irrelevant.
+
+- **A dormant band costs nothing.** Invariant §2.3 says idle objects cost
+  nothing, and an AI is the easiest place in a codebase to violate it. There is
+  no tick and no scan. A band below its threshold schedules ONE event, at a time
+  computed in closed form from how fast pressure rises with time alone; it wakes,
+  looks, and either acts or sleeps again. Ten thousand quiet bands cost what ten
+  thousand quiet settlements cost, which is nothing.
+
+**The asymmetry is published.** Barbarians can do four things players cannot:
+raise troops straight from plunder and from the ground they hold with no
+building and no queue; hold territory without paying empire weight; land
+several columns in the same instant from different distances; and, as a last
+resort, build a doomsday engine. All four are listed in `NPC_PRIVILEGES`, shown
+verbatim on the Wilds screen, and returned by `/v1/threat` alongside the
+pressure and its derivation.
+
+This is the part that is easy to get wrong. An AI with hidden advantages reads
+to a player as a broken game — and they are right to read it that way, because
+they have no way to tell the difference. The same AI with the same advantages,
+stated plainly, reads as a faction with a different nature. Nothing changes
+except whether they were told.
+
+**The doomsday engine is a consequence, not an event.** A band builds one only
+at the top rung, only once, and only when it has lost half the holdings it once
+held. A band that is winning never builds one however old the world is. Work is
+announced publicly the moment it starts — a post on the world board naming the
+camp, the target and the date — and taking the band's seat inside that window
+kills the engine on the slipway. Without the announcement it would be an
+unanswerable punishment; with it, it is a deadline, which is a mechanic.
+
+When it lands it razes six grades of buildings and kills 45% of the garrison,
+then the ordinary assault follows one millisecond behind. Both figures are
+written to the event log with their arithmetic. Invariant §2.7 is about
+battles, but a weapon that removes six grades of somebody's city without showing
+its working would be the least explicable number in the game.
+
+**Bands rebuild.** A beaten band with territory left raises men from it. This
+was added after a trace showed bands emptying themselves, reaching strength
+zero, and then taking thousands of turns to decide they could do nothing — a
+world went permanently quiet the first time a player won properly, which is the
+opposite of what the system is for.
+
+**One thing the model DOES allow that is worth knowing:** a player can hold the
+wilds down by staying small. That is a legitimate strategy and the screen says
+so plainly, because a player should be able to make that trade on purpose
+rather than discover it afterwards.

@@ -823,6 +823,167 @@ async function main(): Promise<void> {
       'not for a broadcast: 30 an hour is far past normal conversation and far short of a mailing list.',
   );
 
+  // ------------------------------------------------------------------- NPCs
+  // The barbarian AI. The specification gives NPCs exactly two lines — that
+  // kills against them cannot carry a formation past Steel (spec/03 §7), and
+  // that an abandoned holding decays to an "NPC successor" (spec/02 §3) — so
+  // every number governing what barbarians actually DO is assumed here and
+  // stated as such. These are the dials to turn when the world is too quiet or
+  // too cruel; none of them touches the player economy.
+  const NPC_PRESSURE_PER_DAY = C.assumed(
+    'NPC_PRESSURE_PER_DAY',
+    0.04,
+    'the specification models NPCs as scenery and gives no escalation curve',
+    'World pressure added per elapsed day. Deliberately small: time alone takes about three years ' +
+      'to reach the tier at which barbarians take player cities, so a world nobody is winning stays ' +
+      'a nuisance. Every faster route to the top of the ladder runs through the other two terms, ' +
+      'which is the entire design \u2014 the barbarians answer the players, not the calendar.',
+  );
+  const NPC_PRESSURE_PER_WEIGHT = C.assumed(
+    'NPC_PRESSURE_PER_WEIGHT',
+    0.9,
+    'no published relationship between player success and NPC threat',
+    'Pressure added per point of the strongest player\u2019s empire weight. This is the term that ' +
+      'makes the barbarians answer the players rather than the calendar: a world where someone is ' +
+      'winning hard escalates years before a quiet one does.',
+  );
+  const NPC_PRESSURE_PER_HOLDING = C.assumed(
+    'NPC_PRESSURE_PER_HOLDING',
+    1.4,
+    'no published relationship between settled territory and NPC threat',
+    'Pressure added per settlement in player hands. Territory is the visible face of success and ' +
+      'the thing barbarians can actually see, so it escalates them faster than anything abstract.',
+  );
+  const NPC_PRESSURE_PER_MENACE = C.assumed(
+    'NPC_PRESSURE_PER_MENACE',
+    18,
+    'no published NPC escalation ladder',
+    'Pressure required per menace tier. Eight tiers span 0..126 pressure. A settled empire of a ' +
+      'dozen holdings supplies most of that on its own within a year; three years of an empty ' +
+      'calendar supplies about half of it. That ratio is the balance point of the whole system.',
+  );
+  const NPC_MAX_MENACE = C.assumed(
+    'NPC_MAX_MENACE',
+    7,
+    'no published NPC escalation ladder',
+    'The top menace tier: skulk, raid, farm, take from other bands, confederate, coordinate, take ' +
+      'from players, doomsday. Each tier adds one behaviour and never removes the ones below it.',
+  );
+  const NPC_TURN_BASE_MS = C.assumed(
+    'NPC_TURN_BASE_MS',
+    18 * 3_600_000,
+    'no published NPC decision cadence',
+    'How long a band waits between decisions at menace 1. Deliberately slower than a player checks ' +
+      'in, so a low-menace world is a background threat rather than a second job.',
+  );
+  const NPC_TURN_PER_MENACE = C.assumed(
+    'NPC_TURN_PER_MENACE',
+    0.82,
+    'no published NPC decision cadence',
+    'The turn interval is multiplied by this per menace tier, so a doomsday-era horde acts about ' +
+      'four times as often as a raiding party. Escalation is felt as tempo before it is felt as size.',
+  );
+  const NPC_MUSTER_FRACTION = C.assumed(
+    'NPC_MUSTER_FRACTION',
+    0.6,
+    'no published NPC commitment rule',
+    'Share of a band\u2019s strength committed to one attack. A band that emptied its seat would be ' +
+      'free to counter-raid, so it always keeps a garrison \u2014 the same discipline a good player shows.',
+  );
+  const NPC_LEVY_PER_SPOIL = C.assumed(
+    'NPC_LEVY_PER_SPOIL',
+    0.0006,
+    'no published NPC growth rule',
+    'Units a band raises per unit of plunder taken. This is the barbarian economy in one number: ' +
+      'they do not build, they do not queue, they convert loot straight into bodies.',
+  );
+  const NPC_LEVY_MAX = C.assumed(
+    'NPC_LEVY_MAX',
+    400,
+    'no published NPC growth rule',
+    'Largest levy one raid can raise, so a single catastrophic sack does not produce an army that ' +
+      'no player on the shard can answer.',
+  );
+  const NPC_TRIBUTE_PER_HOLDING = C.assumed(
+    'NPC_TRIBUTE_PER_HOLDING',
+    3,
+    'no published NPC recovery rule',
+    'Warriors a band raises per turn, per settlement it holds, when it has nothing left to march ' +
+      'with. Barbarians live off the ground they take, so a band that has been beaten but still ' +
+      'holds territory rebuilds. Without this a band that loses one battle badly is finished ' +
+      'forever, and a world goes permanently quiet the first time a player wins.',
+  );
+  const NPC_CONFEDERATE_MENACE = C.assumed(
+    'NPC_CONFEDERATE_MENACE',
+    4,
+    'no published NPC diplomacy',
+    'Menace at which bands begin forming confederations with each other. Below it every band is ' +
+      'alone, which is what makes the first confederation a visible turning point in a world.',
+  );
+  const NPC_CONFEDERATE_RADIUS = C.assumed(
+    'NPC_CONFEDERATE_RADIUS',
+    140,
+    'no published NPC diplomacy',
+    'How far apart two seats may be and still confederate. Barbarian politics are geographic: ' +
+      'bands ally with the neighbours they would otherwise be fighting.',
+  );
+  const NPC_WARPATH_MENACE = C.assumed(
+    'NPC_WARPATH_MENACE',
+    5,
+    'no published NPC coordination',
+    'Menace at which confederates strike the same target together, arriving in the same instant ' +
+      'regardless of where they set out from. Players must time their own waves by hand.',
+  );
+  const NPC_GRUDGE_WEIGHT = C.assumed(
+    'NPC_GRUDGE_WEIGHT',
+    0.25,
+    'no published NPC memory',
+    'How strongly a band favours a target it already has a grudge against. Bands remember who burned ' +
+      'them, which is what turns a punitive expedition into a feud.',
+  );
+  const NPC_DOOMSDAY_MENACE = C.assumed(
+    'NPC_DOOMSDAY_MENACE',
+    7,
+    'no published NPC last resort',
+    'Menace required before a band will even consider a doomsday engine. It is the top of the ladder ' +
+      'and it is not sufficient on its own \u2014 the band must also be losing.',
+  );
+  const NPC_DOOMSDAY_LOSS_RATIO = C.assumed(
+    'NPC_DOOMSDAY_LOSS_RATIO',
+    0.5,
+    'no published NPC last resort',
+    'A band builds a doomsday engine only once it has lost this share of the holdings it once held. ' +
+      '"Last resort" is a state, not a timer: a band that is winning never builds one.',
+  );
+  const NPC_DOOMSDAY_BUILD_MS = C.assumed(
+    'NPC_DOOMSDAY_BUILD_MS',
+    72 * 3_600_000,
+    'no published NPC last resort',
+    'How long the engine takes to build, announced publicly the moment work starts. This window is ' +
+      'the counterplay: take the band\u2019s seat before it finishes and the engine dies on the slipway.',
+  );
+  const NPC_DOOMSDAY_RAZE_GRADES = C.assumed(
+    'NPC_DOOMSDAY_RAZE_GRADES',
+    6,
+    'no published NPC last resort',
+    'Building grades flattened at the target when the engine lands. Severe enough to be a disaster ' +
+      'a player rebuilds from for weeks, bounded so it is never the end of that player\u2019s game.',
+  );
+  const NPC_DOOMSDAY_GARRISON_KILL = C.assumed(
+    'NPC_DOOMSDAY_GARRISON_KILL',
+    0.45,
+    'no published NPC last resort',
+    'Share of the defending garrison killed by the blast before the battle begins. Under half, so a ' +
+      'well-defended settlement can still hold \u2014 the engine opens the assault, it does not replace it.',
+  );
+  const NPC_DOOMSDAY_UNITS = C.assumed(
+    'NPC_DOOMSDAY_UNITS',
+    900,
+    'no published NPC last resort',
+    'Size of the engine\u2019s escort formation, which is what makes it a thing on the map a player can ' +
+      'see coming and intercept rather than a number that arrives out of the sky.',
+  );
+
   // --------------------------------------------------------------- movement
   const ZOC_SPEED_MULT = C.fromSpec('ZOC_SPEED_MULT', 0.6, 'spec/03 §4 · zone of control', '0.6x speed inside a hostile fortification radius.', [0, 1]);
   const ATTRITION_PCT = C.fromSpec('ATTRITION_PCT', 0.03, 'spec/03 §4 · supply', '3% of strength per tick beyond supply range, escalating.', [0, 1]);
