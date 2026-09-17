@@ -15,3 +15,6 @@ assets/procedural/
 # sweep them into a commit — which is how two of them got in.
 /*.png
 /*.jpg
+
+# Scratch output from test harnesses run inside the repo.
+/tmp/
