@@ -282,6 +282,77 @@ export function pixelLabDescription(entry: AssetEntry): string {
 }
 
 /**
+ * Pixler — a real free tier, and an asynchronous one.
+ *
+ * Verified against api.pixler.dev/api/v1 in September 2026. Unlike the others
+ * it does not answer with an image: it returns 202 and a job id, and the PNG
+ * appears at `GET /jobs/{id}` once the queue gets to it. So this polls.
+ *
+ * It supports `transparent`, which is the property that matters, and a colour
+ * palette. What it has no parameter for is ISOMETRIC — the camera has to be
+ * argued for in the prompt, which is exactly where the general models drifted.
+ * PixelLab takes it as a flag, and for 5,943 sprites that must share one angle
+ * the flag is worth more than the free tier is.
+ *
+ * The free plan is 5 credits a day. That is genuinely enough for the starting
+ * kit over a few weeks; it is 3 years for the whole programme.
+ */
+const PIXLER: Provider = {
+  name: 'pixler',
+  envVar: 'PIXLER_API_KEY',
+  hint: 'https://pixler.dev — free tier is 5 generations a day',
+  nativeTransparency: true,
+  async generate(prompt, entry, key) {
+    const base = process.env.PIXLER_BASE_URL ?? 'https://api.pixler.dev/api/v1';
+    const headers = { authorization: `Bearer ${key}`, 'content-type': 'application/json' };
+
+    const start = await fetch(`${base}/generate`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        type: 'Sprite',
+        // The API caps the prompt at 300 characters, so the condensed
+        // description is used rather than the full prose brief — and it is
+        // trimmed rather than sent long and rejected.
+        prompt: pixelLabDescription(entry).slice(0, 300),
+        width: entry.width,
+        height: entry.height,
+        count: 1,
+        transparent: true,
+      }),
+    });
+    await expectOk(start, 'pixler');
+    const job = await start.json() as { id?: string; status?: string };
+    if (!job.id) throw new Error('pixler returned no job id');
+
+    // Poll rather than assume. A queue that is busy is normal, not an error,
+    // but it cannot be waited on forever either.
+    const deadline = Date.now() + 5 * 60_000;
+    for (let attempt = 0; Date.now() < deadline; attempt++) {
+      await new Promise((r) => setTimeout(r, Math.min(8_000, 1_500 + attempt * 1_000)));
+      const poll = await fetch(`${base}/jobs/${job.id}`, { headers });
+      await expectOk(poll, 'pixler (job)');
+      const state = await poll.json() as {
+        status?: string;
+        images?: { url?: string }[];
+        error?: string;
+      };
+      const status = (state.status ?? '').toLowerCase();
+      if (status === 'failed' || state.error) {
+        throw new Error(`pixler job failed: ${state.error ?? status}`);
+      }
+      const url = state.images?.[0]?.url;
+      if (url) {
+        const img = await fetch(url);
+        await expectOk(img, 'pixler (download)');
+        return Buffer.from(await img.arrayBuffer());
+      }
+    }
+    throw new Error(`pixler job ${job.id} did not finish within 5 minutes`);
+  },
+};
+
+/**
  * Free, keyless, and preview-only.
  *
  * Tested September 2026: the images are genuinely good — a legible isometric
@@ -314,7 +385,7 @@ const POLLINATIONS: Provider = {
   },
 };
 
-export const PROVIDERS: Provider[] = [PIXELLAB, OPENAI, STABILITY, REPLICATE, POLLINATIONS];
+export const PROVIDERS: Provider[] = [PIXELLAB, PIXLER, OPENAI, STABILITY, REPLICATE, POLLINATIONS];
 
 // ============================================================================
 // Prompt
@@ -480,10 +551,16 @@ function commitOne(entry: AssetEntry): void {
  * to a large run — and note the retry multiplier below, which matters more than
  * the unit price does.
  */
+/** Free-tier daily caps, where a provider has one. */
+const DAILY_LIMIT: Record<string, number> = { pixler: 5 };
+
 const PRICE_PER_IMAGE: Record<string, { label: string; usd: number }[]> = {
   // PixelLab bills per generation and reports the exact figure back on every
   // call, so this is only a planning number — the run tells you the real one.
   pixellab: [{ label: 'pixflux generation', usd: 0.01 }],
+  // Free tier: 5 credits a day. Priced at zero because that is what it costs —
+  // what it spends is time, which the estimator reports separately.
+  pixler: [{ label: 'free tier (5/day)', usd: 0 }],
   openai: [
     { label: 'low quality', usd: 0.02 },
     { label: 'medium quality', usd: 0.07 },
@@ -504,6 +581,23 @@ function estimate(entries: AssetEntry[], provider: Provider): void {
     return;
   }
   const rows = PRICE_PER_IMAGE[provider.name] ?? [];
+
+  // A free tier does not cost money, it costs TIME, and at five a day that is
+  // the number that decides whether a plan is possible. Reporting $0.00 and
+  // stopping would hide the only constraint that matters.
+  const perDay = DAILY_LIMIT[provider.name];
+  if (perDay !== undefined) {
+    const days = Math.ceil(n / perDay);
+    console.log(
+      `${n} sprite(s) selected, with ${provider.name} — free, at ${perDay} a day:\n\n` +
+      `  ${days} day${days === 1 ? '' : 's'}` +
+      (days > 90 ? `  (${(days / 365).toFixed(1)} years — pick a smaller slice)` : '') +
+      '\n\nFree costs time rather than money. That is affordable for a starting kit and not\n' +
+      'for the whole programme; `--kind` and `--limit` are how you choose a slice.',
+    );
+    return;
+  }
+
   console.log(`${n} sprite(s) selected, with ${provider.name}:\n`);
   for (const r of rows) {
     const once = n * r.usd;
@@ -635,7 +729,7 @@ export async function main(argv: string[]): Promise<void> {
       // PixelLab renders at the manifest's own size with a real alpha
       // channel, so there is nothing to resample and nothing to key — post-
       // processing it would only lose pixels.
-      const png = provider.previewOnly || provider.name === 'pixellab'
+      const png = provider.previewOnly || provider.name === 'pixellab' || provider.name === 'pixler'
         ? raw
         : await postProcess(raw, entry, !provider.nativeTransparency);
       await mkdir(dirname(file), { recursive: true });
