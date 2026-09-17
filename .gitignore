@@ -9,3 +9,9 @@ packages/client/smoke-output/
 assets/previews/
 # The loose baked sprites; the archive beside them is what is kept.
 assets/procedural/
+
+# Scratch screenshots taken at the repo root while checking a render. These are
+# working files, not deliverables, and a blanket `git add -A` will otherwise
+# sweep them into a commit — which is how two of them got in.
+/*.png
+/*.jpg
