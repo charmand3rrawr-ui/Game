@@ -561,9 +561,17 @@ async function postProcess(raw: Buffer, entry: AssetEntry, keyOut: boolean): Pro
         const bg = ((bestKey >> 5) & 31) << 3;
         const bb = (bestKey & 31) << 3;
 
-        // Tolerance has to absorb JPEG ringing around the subject without
-        // eating into it.
-        const TOL = 42;
+        /*
+         * Tolerance has to absorb JPEG ringing without eating the subject.
+         *
+         * 42 was too loose. On a dark building against a pale sky the fill
+         * found paths through anti-aliased edge pixels and shredded holes
+         * right through the roof — the sprite came out looking moth-eaten.
+         * The failure is asymmetric: a little leftover background is a faint
+         * halo, while a leak into the subject destroys it, so this errs tight
+         * and the halo is cleaned up by the alpha ramp below instead.
+         */
+        const TOL = 24;
         const stack: number[] = edge.slice();
         const seen = new Uint8Array(W * H);
         while (stack.length > 0) {
@@ -577,6 +585,24 @@ async function postProcess(raw: Buffer, entry: AssetEntry, keyOut: boolean): Pro
           seen[sIdx] = 1;
           p[i + 3] = 0;
           stack.push(x + 1, y, x - 1, y, x, y + 1, x, y - 1);
+        }
+        /*
+         * Soften what survived at the boundary.
+         *
+         * A hard cut at the tolerance leaves a rim of half-background pixels
+         * that reads as a bright outline once the sprite sits on the dark
+         * settlement ground. Fading alpha on pixels that are merely CLOSE to
+         * the backdrop, without removing them, gives an edge that blends
+         * instead of glowing — and unlike widening the tolerance it cannot
+         * punch holes, because it never propagates.
+         */
+        const SOFT = TOL * 2;
+        for (let i = 0; i < p.length; i += 4) {
+          if (p[i + 3] === 0) continue;
+          const d = Math.max(
+            Math.abs(p[i]! - br), Math.abs(p[i + 1]! - bg), Math.abs(p[i + 2]! - bb),
+          );
+          if (d < SOFT) p[i + 3] = Math.round(255 * (d / SOFT));
         }
         fctx.putImageData(data, 0, 0);
       }
