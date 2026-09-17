@@ -31,7 +31,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { buildManifest, composeBrief, statusOf, type AssetEntry } from './build-assets.js';
-import { VISUAL_TIERS } from '@ascendance/shared';
+import { ART_EXEMPLARS, VISUAL_TIERS } from '@ascendance/shared';
 import { main as rebuildLedger } from './build-assets.js';
 
 const ROOT = new URL('../../../', import.meta.url).pathname;
@@ -262,7 +262,32 @@ const PIXELLAB: Provider = {
  * the rest of the brief describes detail that cannot survive the resolution.
  */
 export function pixelLabDescription(entry: AssetEntry): string {
-  const parts = [entry.subject];
+  const tier = VISUAL_TIERS.find((t) => t.tier === entry.tier);
+
+  /*
+   * THE TIER LEADS.
+   *
+   * It used to trail the building's authored appearance as a short fragment,
+   * and the result was that every tier of the Chieftain's Hall came back as
+   * the same modest longhouse — tier 11, which the workbook calls a named
+   * wonder visible from orbit, was a rustic hut indistinguishable from tier 1.
+   * The authored appearance is the same sentence for all twelve, so whatever
+   * competes with it has to come first.
+   *
+   * And it has to be a description rather than a note to an art director.
+   * `silhouette` is shorthand — at tier 11 it reads "bespoke per building",
+   * which means nothing to a model. `transformation` is the prose version
+   * ("Legendary. A named wonder..."), and where the workbook carries a worked
+   * exemplar for this exact building at this exact tier, that is better still,
+   * because it was written about this building.
+   */
+  const exemplar = ART_EXEMPLARS.find((e) => e.building === entry.subject && e.tier === entry.tier);
+  const parts: string[] = [];
+  if (exemplar) parts.push(exemplar.appearance.replace(/\.$/, ''));
+  else if (tier && tier.tier > 0) parts.push(tier.transformation.replace(/\.$/, ''));
+
+  parts.push(entry.subject);
+
   if (entry.authoredAppearance) {
     // The authored appearance up to its Signature, which is the one detail
     // worth spending pixels on.
@@ -270,14 +295,11 @@ export function pixelLabDescription(entry: AssetEntry): string {
     if (look) parts.push(look.trim().replace(/\.$/, ''));
     if (signature) parts.push(signature.trim().replace(/\.$/, ''));
   }
-  const tier = VISUAL_TIERS.find((t) => t.tier === entry.tier);
-  if (tier && tier.tier > 0) parts.push(tier.silhouette.toLowerCase());
 
   // Units and research carry no authored appearance, so their category is the
-  // only real information available and dropping it left descriptions as thin
-  // as "Militia, era 1". A unit's ROLE is what its silhouette has to read as —
-  // the counter matrix is a rock-paper-scissors the player must see coming —
-  // and a discipline's branch is what makes its icon distinguishable.
+  // only real information available. A unit's ROLE is what its silhouette has
+  // to read as — the counter matrix is a rock-paper-scissors the player must
+  // see coming — and a discipline's branch makes its icon distinguishable.
   if (!entry.authoredAppearance && entry.category) {
     parts.push(entry.kind === 'unit' ? `${entry.category} soldier` : `${entry.category} icon`);
   }

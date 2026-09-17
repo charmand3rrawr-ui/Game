@@ -17,10 +17,10 @@ Until a sprite exists, the renderer draws that building procedurally from `Visua
 
 | Kind | Integrated | Total |
 |---|---:|---:|
-| building | 12 | 5796 |
+| building | 0 | 5796 |
 | research | 0 | 21 |
 | unit | 0 | 126 |
-| **all** | **12** | **5943** |
+| **all** | **0** | **5943** |
 
 ## Drawing them with an image model
 
@@ -51,15 +51,4 @@ over ten need `--yes`, because every image is billed.
 
 ## Integrated
 
-- `building/1_chieftain_s_hall/t0` — Chieftain's Hall (tier 0)
-- `building/1_chieftain_s_hall/t1` — Chieftain's Hall (tier 1)
-- `building/1_chieftain_s_hall/t2` — Chieftain's Hall (tier 2)
-- `building/1_chieftain_s_hall/t3` — Chieftain's Hall (tier 3)
-- `building/1_chieftain_s_hall/t4` — Chieftain's Hall (tier 4)
-- `building/1_chieftain_s_hall/t5` — Chieftain's Hall (tier 5)
-- `building/1_chieftain_s_hall/t6` — Chieftain's Hall (tier 6)
-- `building/1_chieftain_s_hall/t7` — Chieftain's Hall (tier 7)
-- `building/1_chieftain_s_hall/t8` — Chieftain's Hall (tier 8)
-- `building/1_chieftain_s_hall/t9` — Chieftain's Hall (tier 9)
-- `building/1_chieftain_s_hall/t10` — Chieftain's Hall (tier 10)
-- `building/1_chieftain_s_hall/t11` — Chieftain's Hall (tier 11)
+_Nothing yet. Every building is currently drawn procedurally._

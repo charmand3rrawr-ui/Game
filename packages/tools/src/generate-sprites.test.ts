@@ -257,14 +257,37 @@ describe('the PixelLab request matches its published spec', () => {
     expect(first as number).toBeGreaterThan(0);
   });
 
-  it('describes the subject and its Signature, condensed for the resolution', () => {
-    // The full prose brief is written for a general model. At 256 pixels the
-    // detail it describes cannot survive, and a long prompt buries the subject.
+  it('leads with the tier, then the subject and its Signature', () => {
+    // The tier has to come FIRST. Trailing it behind the authored appearance —
+    // which is the same sentence for all twelve tiers — produced twelve
+    // near-identical buildings: tier 11, a named wonder visible from orbit,
+    // came back as a hut indistinguishable from tier 1.
     const d = pixelLabDescription(anEntry());
-    expect(d).toMatch(/^Farm,/);
+    expect(d).toContain('Farm');
     expect(d).toContain('ox-turned grain post');
-    expect(d).toContain('small, low, irregular');
-    expect(d.length).toBeLessThan(400);
+    expect(d.indexOf('Farm')).toBeGreaterThan(0);
+    expect(d.length).toBeLessThan(500);
+  });
+
+  it('makes the top and bottom tiers describe visibly different buildings', () => {
+    // The whole point of twelve authored tiers is that upgrading is visible.
+    // If the descriptions barely differ, the art cannot either.
+    const all = buildManifest();
+    const low = pixelLabDescription(all.find((e) => e.id === 'building/1_chieftain_s_hall/t1')!);
+    const high = pixelLabDescription(all.find((e) => e.id === 'building/1_chieftain_s_hall/t11')!);
+    expect(low).not.toBe(high);
+    // The top tier must carry its grandeur, not art-direction shorthand.
+    expect(high.toLowerCase()).toMatch(/orbit|wonder|hero asset|legendary/);
+    expect(high.toLowerCase()).not.toContain('bespoke per building');
+  });
+
+  it('falls back to the tier prose where no worked exemplar exists', () => {
+    // Only four buildings have exemplars. The other 479 must still get a real
+    // description rather than the silhouette shorthand.
+    const mine = buildManifest().find((e) => e.id === 'building/1_mine/t9')!;
+    const d = pixelLabDescription(mine);
+    expect(d.toLowerCase()).toContain('transcendent');
+    expect(d).toContain('Mine');
   });
 
   it('decodes the image and records what the call actually cost', async () => {
