@@ -72,6 +72,26 @@ interface Props {
   biome?: string;
 }
 
+/**
+ * A plot index as an opaque colour, and back again.
+ *
+ * Encoded across all three channels with the index offset by one, so index 0
+ * is not black and cannot be confused with the cleared buffer. Only exact
+ * colours are decoded: the pick buffer is drawn with antialiasing off at the
+ * edges of flat fills, but a blended edge pixel would decode to a neighbouring
+ * index, so anything that does not round-trip is treated as a miss rather than
+ * as a wrong answer.
+ */
+function plotColour(index: number): string {
+  const v = index + 1;
+  return `rgb(${v & 255} ${(v >> 8) & 255} ${(v >> 16) & 255})`;
+}
+
+function plotFromColour(r: number, g: number, b: number): number | null {
+  const v = r | (g << 8) | (b << 16);
+  return v > 0 ? v - 1 : null;
+}
+
 /** Iso tile proportions. Width:height of 2:1 is the classic readable angle. */
 const TILE_W = 96;
 const TILE_H = 48;
@@ -83,6 +103,27 @@ export function SettlementCanvas({
   const [hover, setHover] = useState<number | null>(null);
   const frame = useRef(0);
   const raf = useRef(0);
+  /**
+   * An offscreen copy of the scene where every plot is a flat, unique colour.
+   *
+   * WHAT A CLICK HAS TO MEAN: you select the thing you are pointing at. The
+   * ground is a diamond, but a building stands UP out of it, so testing the
+   * diamond alone meant a tall building's roof — the part you actually look
+   * at — selected whatever was behind it, or nothing.
+   *
+   * Bounding boxes were the obvious next step and were also wrong: a sprite's
+   * box includes its transparent corners, so a click in the empty air beside
+   * one building was swallowed instead of reaching the building behind it. A
+   * measured sweep showed exactly that, selecting the Archery Range when the
+   * Elder's Lodge was under the cursor.
+   *
+   * So the scene is drawn a second time with every building painted as a flat
+   * silhouette in a colour encoding its plot index, and a click reads one
+   * pixel. It is exact by construction: the clickable region IS the drawn
+   * shape, including a sprite's own alpha, and the two cannot drift apart
+   * because the same draw code produces both.
+   */
+  const pickCanvas = useRef<HTMLCanvasElement | null>(null);
 
   // A square-ish grid, so a village and a city both stay on screen.
   const cols = Math.max(3, Math.ceil(Math.sqrt(Math.max(1, totalPlots))));
@@ -124,7 +165,19 @@ export function SettlementCanvas({
   /** Which plot is under a point, for both mouse and touch. */
   const plotAt = useCallback((px: number, py: number, width: number, height: number): number | null => {
     const { scale, originX, originY } = layout(width, height);
-    // Walk back to front so the topmost drawn tile wins a tie.
+
+    // One pixel out of the pick buffer. Exact, and cheap.
+    const pc = pickCanvas.current;
+    if (pc) {
+      const pctx = pc.getContext('2d', { willReadFrequently: true });
+      const d = pctx?.getImageData(Math.round(px), Math.round(py), 1, 1).data;
+      if (d && d[3]! > 0) {
+        const plot = plotFromColour(d[0]!, d[1]!, d[2]!);
+        if (plot !== null) return plot;
+      }
+    }
+
+    // Fallback for the frame before the first draw lands.
     for (let i = totalPlots - 1; i >= 0; i--) {
       const col = i % cols;
       const row = Math.floor(i / cols);
@@ -183,6 +236,13 @@ export function SettlementCanvas({
       return { x: originX + p.x * scale, y: originY + p.y * scale };
     };
 
+    if (!pickCanvas.current) pickCanvas.current = document.createElement('canvas');
+    const pc = pickCanvas.current;
+    pc.width = width;
+    pc.height = height;
+    const pctx = pc.getContext('2d', { willReadFrequently: true });
+    pctx?.clearRect(0, 0, width, height);
+
     // Pass 1: the ground. Every cell, including the ones under a footprint, so
     // a large building is visibly standing on several plots.
     for (const i of order) {
@@ -192,6 +252,27 @@ export function SettlementCanvas({
       const isSel = plot !== undefined && selected === plot.index;
       const isHover = plot !== undefined && hover === plot.index;
       drawTile(ctx, c.x, c.y, scale, ground, !owned, isSel, isHover && !isSel);
+      // Bare ground is clickable too — an empty plot is a decision to make —
+      // so the diamond goes into the pick buffer under the buildings.
+      if (pctx && plot !== undefined) {
+        pctx.fillStyle = plotColour(plot.index);
+        pctx.beginPath();
+        pctx.moveTo(c.x, c.y - (TILE_H / 2) * scale);
+        pctx.lineTo(c.x + (TILE_W / 2) * scale, c.y);
+        pctx.lineTo(c.x, c.y + (TILE_H / 2) * scale);
+        pctx.lineTo(c.x - (TILE_W / 2) * scale, c.y);
+        pctx.closePath();
+        pctx.fill();
+      } else if (pctx) {
+        pctx.fillStyle = plotColour(i);
+        pctx.beginPath();
+        pctx.moveTo(c.x, c.y - (TILE_H / 2) * scale);
+        pctx.lineTo(c.x + (TILE_W / 2) * scale, c.y);
+        pctx.lineTo(c.x, c.y + (TILE_H / 2) * scale);
+        pctx.lineTo(c.x - (TILE_W / 2) * scale, c.y);
+        pctx.closePath();
+        pctx.fill();
+      }
     }
 
     // Pass 2: the buildings, back to front, each at the centroid of its
@@ -199,6 +280,7 @@ export function SettlementCanvas({
     const drawn = [...plots]
       .filter((p) => p.building)
       .sort((a, b2) => depthOf(a, cols) - depthOf(b2, cols));
+
 
     for (const plot of drawn) {
       const span = Math.max(1, plot.span);
@@ -213,6 +295,15 @@ export function SettlementCanvas({
         ctx, sx / span, sy / span, scale, plot.building!, grade, maxGrade, t,
         selected === plot.index || hover === plot.index, span,
       );
+      // The same geometry again, flat, into the pick buffer. Drawn in the same
+      // back-to-front order, so a nearer building correctly overwrites one
+      // behind it and the topmost colour is what a click reads.
+      if (pctx) {
+        drawBuilding(
+          pctx, sx / span, sy / span, scale, plot.building!, grade, maxGrade, t,
+          false, span, plotColour(plot.index),
+        );
+      }
     }
 
     // The plot budget, from the server. Scarcity you can see — and a number
@@ -411,13 +502,23 @@ function drawTile(
  * because damage and Overdriven have to survive being drawn over a busy
  * building and still read at a glance.
  */
+/** Returns the screen box the building occupied, so clicks can match it. */
+interface DrawnBox { x: number; y: number; w: number; h: number }
+
 function drawBuilding(
   ctx: CanvasRenderingContext2D, cx: number, cy: number, scale: number,
   b: BuildingVisual & { id: string }, grade: number, maxGrade: number,
   frame: number, emphasised: boolean, span: number,
-): void {
+  /**
+   * When set, the building is drawn as a flat silhouette in this colour
+   * instead of its real materials — see `PICK` in the draw loop.
+   */
+  pick?: string,
+): DrawnBox {
   const sil = silhouetteFor(b);
-  const pal = paletteFor(b.category, b.era);
+  const pal = pick
+    ? { wall: pick, roof: pick, line: pick, glow: pick }
+    : paletteFor(b.category, b.era);
   const act = activityState(b);
   const dmg = damageState(b.damage);
   const aura = auraFor(b.category, grade, maxGrade);
@@ -440,7 +541,8 @@ function drawBuilding(
   const h = Math.max(12, sil.height * TILE_H * 3.0 * scale);
 
   // --- cultivation aura, behind the mass so it haloes rather than veils -----
-  if (aura > 0) {
+  // Skipped when picking: a soft halo is not part of what you can click.
+  if (aura > 0 && !pick) {
     const r = (w + h) * 0.55;
     const glow = ctx.createRadialGradient(cx, cy - h * 0.4, 0, cx, cy - h * 0.4, r);
     const pulse = 0.12 + 0.05 * Math.sin(frame / 34 + jitter * 6);
@@ -467,17 +569,52 @@ function drawBuilding(
    */
   const art = sprite(buildingSpritePath(b.key, sil.tier));
   if (art) {
-    const drawW = w * 1.35;
+    /*
+     * A sprite may not grow past its own plots.
+     *
+     * Authored art arrives at whatever aspect ratio it was drawn at, and
+     * scaling it to a fixed multiple of the mass let a tall or wide one spill
+     * sideways over its neighbours — which looks like a bug and, worse, put
+     * pixels where a different plot's click region is. The footprint is the
+     * contract: the width is capped to the plots the building actually
+     * occupies, and the height follows from the sprite's own proportions.
+     */
+    const maxW = (TILE_W / 2) * scale * 2 * Math.sqrt(Math.max(1, span));
+    const drawW = Math.min(w * 1.35, maxW);
     const drawH = drawW * (art.naturalHeight / Math.max(1, art.naturalWidth));
+    const x = cx - drawW / 2;
+    const y = cy + hh * 0.2 - drawH;
+    if (pick) {
+      /*
+       * Paint the sprite's own alpha in the pick colour.
+       *
+       * `source-atop` clipped to the sprite's box fills only where the sprite
+       * actually has pixels, so the click region becomes the artwork's real
+       * silhouette rather than its bounding rectangle. That is what stops a
+       * transparent corner of one sprite swallowing clicks meant for the
+       * building behind it.
+       */
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x, y, drawW, drawH);
+      ctx.clip();
+      ctx.drawImage(art, x, y, drawW, drawH);
+      ctx.globalCompositeOperation = 'source-atop';
+      ctx.fillStyle = pick;
+      ctx.fillRect(x, y, drawW, drawH);
+      ctx.restore();
+      return { x, y, w: drawW, h: drawH };
+    }
     ctx.globalAlpha = sil.solidity;
-    ctx.drawImage(art, cx - drawW / 2, cy + hh * 0.2 - drawH, drawW, drawH);
+    ctx.drawImage(art, x, y, drawW, drawH);
     ctx.globalAlpha = 1;
     drawOverlays(ctx, cx, cy, scale, drawW, drawH, b, frame, emphasised, jitter);
-    return;
+    return { x, y, w: drawW, h: drawH };
   }
 
   // --- tier 0: a cleared site, not a building ------------------------------
   if (sil.tier === 0) {
+    if (pick) return { x: cx - hw, y: cy - hh, w: hw * 2, h: hh * 2 };
     ctx.strokeStyle = 'rgba(255,255,255,0.4)';
     ctx.lineWidth = 1;
     for (let i = 0; i < 4; i++) {
@@ -487,16 +624,19 @@ function drawBuilding(
       ctx.lineTo(cx + Math.cos(a) * hw * 0.5, cy + Math.sin(a) * hh * 0.5 - 6 * scale);
       ctx.stroke();
     }
-    return;
+    // A cleared site is only its ground, so its click region is the diamond.
+    return { x: cx - hw, y: cy - hh, w: hw * 2, h: hh * 2 };
   }
 
   ctx.globalAlpha = sil.solidity;
 
   // --- contact shadow: without it the mass appears to hover over its plot ---
-  ctx.fillStyle = 'rgba(0,0,0,0.30)';
-  ctx.beginPath();
-  ctx.ellipse(cx + w * 0.06, cy + hh * 0.18, w * 0.52, w * 0.20, 0, 0, Math.PI * 2);
-  ctx.fill();
+  if (!pick) {
+    ctx.fillStyle = 'rgba(0,0,0,0.30)';
+    ctx.beginPath();
+    ctx.ellipse(cx + w * 0.06, cy + hh * 0.18, w * 0.52, w * 0.20, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   // --- annexes first, so the main mass overlaps them ------------------------
   for (let i = 0; i < sil.annexes; i++) {
@@ -527,7 +667,7 @@ function drawBuilding(
   }
 
   // --- ornament: window rows, which also carry the activity state -----------
-  if (sil.ornament > 0) {
+  if (sil.ornament > 0 && !pick) {
     const rowCount = Math.max(1, Math.round(sil.ornament * 4));
     const lit = act === 'working' || act === 'overdriven';
     for (let r = 0; r < rowCount; r++) {
@@ -566,8 +706,16 @@ function drawBuilding(
   ctx.globalAlpha = 1;
 
   // The overlays. Shared with the authored-art path above, so a drawn building
-  // carries exactly the same gameplay information as a generated one.
-  drawOverlays(ctx, cx, cy, scale, w, h, b, frame, emphasised, jitter);
+  // carries exactly the same gameplay information as a generated one. Skipped
+  // when picking: damage scars and a selection ring are not clickable surface.
+  if (!pick) drawOverlays(ctx, cx, cy, scale, w, h, b, frame, emphasised, jitter);
+
+  // The click region covers the mass AND whatever rises out of it — a tower
+  // from tier 5, floating elements from tier 9 — because those are the parts a
+  // player sees first on a tall building and therefore the parts they aim at.
+  const top = sil.tower > 0 ? h * (0.92 + sil.tower) : h;
+  const reach = Math.max(top, sil.floats > 0 ? h * 1.35 : 0);
+  return { x: cx - w / 2, y: cy + hh * 0.2 - reach, w, h: reach + hh * 0.2 };
 }
 
 /**
@@ -701,8 +849,11 @@ function box(
 
   // Left face in shadow, right face lit — one consistent light direction, so
   // the whole settlement reads as one scene.
-  poly([bL, bB, tB, tL], flat ? pal.wall : shade(pal.wall, -18));
-  poly([bB, bR, tR, tB], flat ? pal.wall : shade(pal.wall, 6));
+  // A wide spread between the two side faces. At -18/+6 the volumes read as
+  // flat cards; pushing the shadow side down and the lit side up is what gives
+  // a stylised game look its solidity at small sizes.
+  poly([bL, bB, tB, tL], flat ? pal.wall : shade(pal.wall, -26));
+  poly([bB, bR, tR, tB], flat ? pal.wall : shade(pal.wall, 10));
   poly([tL, tT, tR, tB], flat ? pal.wall : pal.roof);
 }
 

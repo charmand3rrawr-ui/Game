@@ -278,14 +278,30 @@ const CATEGORY_HUE: Record<string, number> = {
 };
 
 /** Era I is thatch and timber; Era VII is composite and light. */
+/**
+ * Bright, saturated, stylised — the look a modern cartoon-realist game uses.
+ *
+ * The first pass was muted: saturation in the twenties, lightness in the
+ * forties. It was defensible as "materials", and on a dark settlement ground
+ * it read as a row of grey-brown boxes with nothing to tell them apart at a
+ * glance. That is the wrong failure for this screen, because CATEGORY is
+ * gameplay — a player scanning a settlement needs to find the Barracks without
+ * reading a label.
+ *
+ * So: saturation high enough that each category's hue is unmistakable, and
+ * lightness high enough that the buildings sit forward of the ground rather
+ * than sinking into it. Era still changes material, but now across a bright
+ * range rather than a drab one — a later era reads as cleaner and more
+ * luminous, not merely paler.
+ */
 const ERA_MATERIAL: { sat: number; light: number; line: number }[] = [
-  { sat: 34, light: 42, line: 22 }, // I   timber, thatch
-  { sat: 32, light: 45, line: 24 }, // II  fired brick, tile
-  { sat: 28, light: 48, line: 26 }, // III dressed stone
-  { sat: 24, light: 52, line: 30 }, // IV  iron and glass
-  { sat: 22, light: 57, line: 34 }, // V   steel
-  { sat: 26, light: 62, line: 40 }, // VI  alloy
-  { sat: 34, light: 68, line: 46 }, // VII composite, light
+  { sat: 58, light: 58, line: 30 }, // I   timber, thatch
+  { sat: 60, light: 60, line: 32 }, // II  fired brick, tile
+  { sat: 56, light: 62, line: 34 }, // III dressed stone
+  { sat: 58, light: 65, line: 36 }, // IV  iron and glass
+  { sat: 62, light: 68, line: 38 }, // V   steel
+  { sat: 68, light: 71, line: 40 }, // VI  alloy
+  { sat: 74, light: 74, line: 44 }, // VII composite, light
 ];
 
 export function paletteFor(category: string, era: number): Palette {
@@ -293,10 +309,14 @@ export function paletteFor(category: string, era: number): Palette {
   const m = ERA_MATERIAL[Math.min(ERA_MATERIAL.length, Math.max(1, era)) - 1]!;
   return {
     wall: `hsl(${hue} ${m.sat}% ${m.light}%)`,
-    // The roof is darker than the wall so the massing reads from above.
-    roof: `hsl(${hue} ${m.sat + 6}% ${Math.max(14, m.light - 14)}%)`,
+    // The roof is darker AND more saturated than the wall. A wide value gap
+    // between the two is what makes massing read instantly at sprite size —
+    // the earlier 14-point gap left roof and wall reading as one flat shape.
+    roof: `hsl(${hue} ${Math.min(100, m.sat + 14)}% ${Math.max(20, m.light - 26)}%)`,
     line: `hsl(${hue} ${m.sat}% ${m.line}%)`,
-    glow: `hsl(${(hue + 18) % 360} 82% 66%)`,
+    // Lit windows and forge glow: warm, and brighter than anything else on the
+    // building, so an occupied settlement reads as occupied.
+    glow: `hsl(${(hue + 22) % 360} 95% 74%)`,
   };
 }
 
